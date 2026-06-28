@@ -110,6 +110,13 @@ class SqlServerBackend implements CardBackend {
   }
 
   @override
+  Future<void> setCardPrice(int id, double price) async {
+    await _db.execute(
+      'UPDATE dbo.cards SET price_usd = ${_lit(price)} WHERE id = ${_lit(id)}',
+    );
+  }
+
+  @override
   Future<AddResult> addOrMergeCard(MtgCard card) async {
     final existing = await _db.execute(
       'SELECT TOP 1 id, quantity FROM dbo.cards '

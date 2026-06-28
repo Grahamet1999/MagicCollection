@@ -92,6 +92,12 @@ class SqliteBackend implements CardBackend {
   }
 
   @override
+  Future<void> setCardPrice(int id, double price) async {
+    await _database
+        .update('cards', {'price_usd': price}, where: 'id = ?', whereArgs: [id]);
+  }
+
+  @override
   Future<AddResult> addOrMergeCard(MtgCard card) async {
     final existing = await _matchEntry(
       card.setCode,

@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import '../models/folder.dart';
 import '../models/mtg_card.dart';
 import 'database_service.dart';
+import 'scryfall_service.dart';
 
 /// In-memory coordinator over [DatabaseService] shared by both tabs.
 ///
@@ -42,6 +43,11 @@ class CollectionStore extends ChangeNotifier {
   CardSort get sort => _sort;
   bool get sortAscending => _sortAscending;
   int get totalCards => _cards.fold(0, (sum, c) => sum + c.quantity);
+
+  /// Total USD value of the current view (sum of price × quantity), summed over
+  /// the displayed folder / Unfiled / All cards.
+  double get totalValue =>
+      _cards.fold(0.0, (sum, c) => sum + (c.priceUsd ?? 0) * c.quantity);
 
   Future<void> load() async {
     _folders = await _db.getFolders();
@@ -179,6 +185,45 @@ class CollectionStore extends ChangeNotifier {
     await load();
   }
 
+  /// Re-fetches current USD prices from Scryfall for every card and updates the
+  /// stored values (foil-aware). Returns how many rows changed.
+  Future<PriceRefreshResult> refreshPrices() async {
+    final all = await _db.getCards();
+    if (all.isEmpty) return const PriceRefreshResult(updated: 0, total: 0);
+
+    final scryfall = ScryfallService();
+    try {
+      // Unique printing identifiers for the batch lookup.
+      final byKey = <String, Map<String, String>>{};
+      for (final c in all) {
+        byKey['${c.setCode.toLowerCase()}|${c.collectorNumber}'] = {
+          'set': c.setCode.toLowerCase(),
+          'collector_number': c.collectorNumber,
+        };
+      }
+      final result = await scryfall.getCollection(byKey.values.toList());
+      final jsonByKey = <String, Map<String, dynamic>>{
+        for (final j in result.found)
+          '${(j['set'] as String).toLowerCase()}|${j['collector_number']}': j,
+      };
+
+      var updated = 0;
+      for (final c in all) {
+        final json = jsonByKey['${c.setCode.toLowerCase()}|${c.collectorNumber}'];
+        if (json == null) continue;
+        final price = MtgCard.fromScryfall(json, foil: c.foil).priceUsd;
+        if (price != null && price != c.priceUsd) {
+          await _db.setCardPrice(c.id!, price);
+          updated++;
+        }
+      }
+      await load();
+      return PriceRefreshResult(updated: updated, total: all.length);
+    } finally {
+      scryfall.dispose();
+    }
+  }
+
   Future<void> addFolder(String name) async {
     await _db.addFolder(name);
     await load();
@@ -195,6 +240,13 @@ class CollectionStore extends ChangeNotifier {
     await _db.deleteFolder(id);
     await load();
   }
+}
+
+/// Result of [CollectionStore.refreshPrices].
+class PriceRefreshResult {
+  const PriceRefreshResult({required this.updated, required this.total});
+  final int updated;
+  final int total;
 }
 
 /// A printing (set + collector number + foil) combined across folders, with the

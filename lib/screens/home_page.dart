@@ -57,6 +57,44 @@ class HomePage extends StatelessWidget {
     }
   }
 
+  Future<void> _refreshPrices(BuildContext context) async {
+    final navigator = Navigator.of(context);
+    final messenger = ScaffoldMessenger.of(context);
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const AlertDialog(
+        content: Row(
+          children: [
+            SizedBox(
+              width: 22,
+              height: 22,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+            SizedBox(width: 16),
+            Text('Refreshing prices from Scryfall…'),
+          ],
+        ),
+      ),
+    );
+    try {
+      final result = await store.refreshPrices();
+      navigator.pop(); // close the progress dialog
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(result.total == 0
+              ? 'No cards to update.'
+              : 'Updated ${result.updated} of ${result.total} card prices.'),
+        ),
+      );
+    } catch (e) {
+      navigator.pop();
+      messenger.showSnackBar(
+        SnackBar(content: Text('Price refresh failed: $e')),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final db = DatabaseService.instance;
@@ -66,6 +104,11 @@ class HomePage extends StatelessWidget {
         appBar: AppBar(
           title: const Text('MTG Collection'),
           actions: [
+            IconButton(
+              tooltip: 'Refresh prices from Scryfall',
+              icon: const Icon(Icons.refresh),
+              onPressed: () => _refreshPrices(context),
+            ),
             IconButton(
               tooltip: 'About',
               icon: const Icon(Icons.info_outline),

@@ -204,12 +204,27 @@ class _CollectionTabState extends State<CollectionTab> {
   }
 
   String _countLabel(CollectionStore store) {
+    final value = _money(store.totalValue);
     if (store.isAggregated) {
       final unique = store.aggregatedCards.length;
-      return '$unique unique • ${store.totalCards} total';
+      return '$unique unique • ${store.totalCards} total • $value';
     }
     return '${store.cards.length} card'
-        '${store.cards.length == 1 ? '' : 's'} • ${store.totalCards} total';
+        '${store.cards.length == 1 ? '' : 's'} • ${store.totalCards} total • $value';
+  }
+
+  /// Formats a USD amount with a thousands separator, e.g. 1234.5 -> "\$1,234.50".
+  static String _money(double value) {
+    final fixed = value.toStringAsFixed(2);
+    final dot = fixed.indexOf('.');
+    final intPart = fixed.substring(0, dot);
+    final decPart = fixed.substring(dot + 1);
+    final buf = StringBuffer();
+    for (var i = 0; i < intPart.length; i++) {
+      if (i > 0 && (intPart.length - i) % 3 == 0) buf.write(',');
+      buf.write(intPart[i]);
+    }
+    return '\$$buf.$decPart';
   }
 
   Widget _buildGrid(BuildContext context, CollectionStore store) {
