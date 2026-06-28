@@ -1,0 +1,34 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(& flutter config --enable-windows-desktop 2>$null)",
+      "PowerShell(& flutter pub get)",
+      "PowerShell(& flutter analyze)",
+      "PowerShell(& flutter build windows --debug 2>&1)",
+      "PowerShell(Start-Process -FilePath \"C:\\\\source\\\\Claude Code\\\\MTGApp\\\\build\\\\windows\\\\x64\\\\runner\\\\Debug\\\\mtg_collection.exe\")",
+      "PowerShell(Get-Process -Name mtg_collection -ErrorAction SilentlyContinue)",
+      "PowerShell(Stop-Process -Name mtg_collection -Force -ErrorAction SilentlyContinue)",
+      "WebFetch(domain:pub.dev)",
+      "PowerShell(& flutter pub get 2>&1)",
+      "PowerShell(& dart run tool/db_check.dart 2>&1)",
+      "PowerShell(& dart run tool/odbc_probe.dart 2>&1)",
+      "PowerShell(& flutter analyze 2>&1)",
+      "PowerShell(& flutter build windows --release 2>&1)",
+      "PowerShell(& flutter pub add csv file_picker 2>&1)",
+      "PowerShell(& dart run tool/csv_check.dart 2>&1)",
+      "PowerShell(& dart run tool/restore.dart 2>&1)",
+      "PowerShell(& dart run tool/merge_check.dart 2>&1)",
+      "PowerShell(& dart run tool/split_check.dart 2>&1)",
+      "PowerShell(& flutter test test/sqlite_backend_test.dart 2>&1)",
+      "PowerShell(& dart run tool/backend_check.dart 2>&1)",
+      "WebSearch",
+      "PowerShell(& dart run tool/export_check.dart 2>&1)",
+      "PowerShell(Get-ChildItem \"C:\\\\source\\\\Claude Code\\\\MTGApp\\\\build\\\\windows\\\\x64\\\\runner\\\\Release\" -Recurse | Select-Object @{n='RelPath';e={$_.FullName.Replace\\(\"C:\\\\source\\\\Claude Code\\\\MTGApp\\\\build\\\\windows\\\\x64\\\\runner\\\\Release\\\\\",\"\"\\)}}, @{n='Size\\(KB\\)';e={[math]::Round\\($_.Length/1KB\\)}} | Format-Table -AutoSize)",
+      "PowerShell(Write-Output \"=== native_assets.json ===\"; Get-Content \"C:\\\\source\\\\Claude Code\\\\MTGApp\\\\build\\\\windows\\\\x64\\\\runner\\\\Release\\\\native_assets.json\"; Write-Output \"\"; Write-Output \"=== any sqlite3.dll anywhere in build/ ===\"; Get-ChildItem \"C:\\\\source\\\\Claude Code\\\\MTGApp\\\\build\" -Recurse -Filter \"sqlite3.dll\" -ErrorAction SilentlyContinue | Select-Object FullName, @{n='KB';e={[math]::Round\\($_.Length/1KB\\)}})",
+      "PowerShell(& flutter pub add sqlite3_flutter_libs 2>&1)",
+      "PowerShell(& flutter build windows --release 2>&1 | Select-Object -Last 3; Write-Output \"=== Release folder \\(top level\\) ===\"; Get-ChildItem \"C:\\\\source\\\\Claude Code\\\\MTGApp\\\\build\\\\windows\\\\x64\\\\runner\\\\Release\" | Select-Object Name, @{n='KB';e={[math]::Round\\($_.Length/1KB\\)}} | Format-Table -AutoSize)",
+      "PowerShell(Get-ChildItem \"C:\\\\source\\\\Claude Code\\\\MTGApp\\\\build\\\\windows\\\\x64\\\\runner\\\\Release\" | Select-Object Name, @{n='KB';e={[math]::Round\\($_.Length/1KB\\)}} | Format-Table -AutoSize)",
+      "PowerShell(cd \"C:\\\\source\\\\Claude Code\\\\MTGApp\"; git init -b main 2>&1; git add -A 2>&1; Write-Output \"=== staged file count ===\"; \\(git diff --cached --name-only | Measure-Object -Line\\).Lines; Write-Output \"=== sanity: is build/ or tar.xz staged? \\(should be empty\\) ===\"; git diff --cached --name-only | Select-String -Pattern \"^build/|\\\\.tar\\\\.xz$|\\\\.dart_tool/\")"
+    ]
+  }
+}

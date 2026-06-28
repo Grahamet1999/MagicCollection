@@ -1,0 +1,157 @@
+import 'package:flutter/material.dart';
+
+import '../services/collection_store.dart';
+import '../services/database_service.dart';
+import '../services/db_config.dart';
+import 'home_page.dart';
+
+/// Gates the app on a successful database connection.
+///
+/// Instead of crashing at startup when SQL Server is unreachable, this shows a
+/// readable error screen with the underlying message and a Retry button, so the
+/// user can fix their server/connection and try again without relaunching.
+class StartupGate extends StatefulWidget {
+  const StartupGate({super.key, required this.store});
+
+  final CollectionStore store;
+
+  @override
+  State<StartupGate> createState() => _StartupGateState();
+}
+
+enum _Status { connecting, ready, error }
+
+class _StartupGateState extends State<StartupGate> {
+  _Status _status = _Status.connecting;
+  String _error = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _connect();
+  }
+
+  Future<void> _connect() async {
+    setState(() => _status = _Status.connecting);
+    try {
+      await DatabaseService.instance.init();
+      await widget.store.load();
+      if (mounted) setState(() => _status = _Status.ready);
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _status = _Status.error;
+          _error = e.toString();
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    switch (_status) {
+      case _Status.ready:
+        return HomePage(store: widget.store);
+      case _Status.connecting:
+        return const Scaffold(
+          body: Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                CircularProgressIndicator(),
+                SizedBox(height: 16),
+                Text('Connecting to SQL Server…'),
+              ],
+            ),
+          ),
+        );
+      case _Status.error:
+        return _ErrorScreen(message: _error, onRetry: _connect);
+    }
+  }
+}
+
+class _ErrorScreen extends StatelessWidget {
+  const _ErrorScreen({required this.message, required this.onRetry});
+
+  final String message;
+  final VoidCallback onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Scaffold(
+      body: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 640),
+          child: Padding(
+            padding: const EdgeInsets.all(32),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Icon(Icons.cloud_off, color: scheme.error, size: 32),
+                    const SizedBox(width: 12),
+                    Text(
+                      "Couldn't connect to SQL Server",
+                      style: Theme.of(context).textTheme.headlineSmall,
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  'The app uses ${DbConfig.driver} to reach '
+                  '"${DbConfig.server}" (database "${DbConfig.database}", '
+                  'Windows authentication).',
+                  style: Theme.of(context).textTheme.bodyMedium,
+                ),
+                const SizedBox(height: 16),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: scheme.errorContainer,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: SelectableText(
+                    message,
+                    style: TextStyle(
+                      color: scheme.onErrorContainer,
+                      fontFamily: 'monospace',
+                      fontSize: 13,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  'Things to check:',
+                  style: Theme.of(context).textTheme.titleSmall,
+                ),
+                const SizedBox(height: 4),
+                const Text('• The SQL Server service is running.'),
+                const Text(
+                  '• The server/instance and driver name in db_config.dart '
+                  'match your setup.',
+                ),
+                const Text(
+                  '• Your Windows account can connect (Windows authentication).',
+                ),
+                const SizedBox(height: 24),
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: FilledButton.icon(
+                    onPressed: onRetry,
+                    icon: const Icon(Icons.refresh),
+                    label: const Text('Retry'),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
