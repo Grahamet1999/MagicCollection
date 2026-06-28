@@ -12,13 +12,8 @@ Moxfield-compatible format).
 ## Download & install (prebuilt app)
 
 1. Go to the **[Releases page](https://github.com/Grahamet1999/MagicCollection/releases)**.
-2. Under the latest release's **Assets**, download **`MTGApp.tar.xz`**.
-3. **Extract it:**
-   - **Windows 11:** right-click the file → **Extract All…** (or just double-click it), and choose a destination.
-   - **Any Windows 10/11:** open a terminal where the file is and run:
-     ```
-     tar -xf MTGApp.tar.xz
-     ```
+2. Under the latest release's **Assets**, download **`MTGApp.zip`**.
+3. **Extract it:** right-click the file → **Extract All…** and choose a destination.
 4. Open the extracted **`MTGApp`** folder and run **`mtg_collection.exe`**.
 
 > Keep all files together — run the `.exe` from inside the `MTGApp` folder; it
