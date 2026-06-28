@@ -66,6 +66,18 @@ class HomePage extends StatelessWidget {
         appBar: AppBar(
           title: const Text('MTG Collection'),
           actions: [
+            IconButton(
+              tooltip: 'About',
+              icon: const Icon(Icons.info_outline),
+              onPressed: () => showAboutDialog(
+                context: context,
+                applicationName: 'MTG Collection',
+                applicationVersion: '1.0.0',
+                applicationIcon: const Icon(Icons.style_outlined, size: 40),
+                applicationLegalese:
+                    '© 2026 @oosshh\nReleased under the MIT License.',
+              ),
+            ),
             PopupMenuButton<_ExportFormat>(
               tooltip: 'Export collection',
               icon: const Icon(Icons.download),
