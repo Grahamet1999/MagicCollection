@@ -193,7 +193,11 @@ class _Row {
     }
 
     final set = at(cols.set);
-    final number = at(cols.number);
+    final rawNumber = at(cols.number);
+    // Normalize leading zeros so "001" matches Scryfall's canonical "1".
+    final number = rawNumber == null
+        ? null
+        : ScryfallService.normalizeCollectorNumber(rawNumber);
     final name = at(cols.name);
 
     final hasSetNumber =

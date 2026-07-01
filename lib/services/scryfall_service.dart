@@ -17,6 +17,19 @@ class ScryfallService {
     'Accept': 'application/json',
   };
 
+  /// Normalizes a collector number to Scryfall's canonical form: trims
+  /// surrounding whitespace and strips leading zeros on purely numeric numbers
+  /// (e.g. "001" -> "1"). Non-numeric numbers (e.g. "12a", "★") are left as-is
+  /// apart from trimming, so nothing is lost.
+  static String normalizeCollectorNumber(String input) {
+    final t = input.trim();
+    if (RegExp(r'^\d+$').hasMatch(t)) {
+      final stripped = t.replaceFirst(RegExp(r'^0+'), '');
+      return stripped.isEmpty ? '0' : stripped;
+    }
+    return t;
+  }
+
   /// Looks up the exact printing identified by [setCode] + [collectorNumber]
   /// via `/cards/:set/:number`. Returns null if not found.
   Future<Map<String, dynamic>?> getBySetAndNumber(
@@ -24,7 +37,8 @@ class ScryfallService {
     String collectorNumber,
   ) async {
     final set = Uri.encodeComponent(setCode.trim().toLowerCase());
-    final number = Uri.encodeComponent(collectorNumber.trim());
+    final number =
+        Uri.encodeComponent(normalizeCollectorNumber(collectorNumber));
     final uri = Uri.parse('$_base/cards/$set/$number');
     final res = await _client.get(uri, headers: _headers);
 
@@ -74,7 +88,11 @@ class ScryfallService {
 
     for (var i = 0; i < identifiers.length; i += 75) {
       final end = (i + 75 < identifiers.length) ? i + 75 : identifiers.length;
-      final chunk = identifiers.sublist(i, end);
+      final chunk = identifiers.sublist(i, end).map((id) {
+        final cn = id['collector_number'];
+        if (cn == null) return id;
+        return {...id, 'collector_number': normalizeCollectorNumber(cn)};
+      }).toList();
       final res = await _client.post(
         Uri.parse('$_base/cards/collection'),
         headers: {..._headers, 'Content-Type': 'application/json'},
