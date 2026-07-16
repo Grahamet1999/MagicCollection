@@ -50,15 +50,27 @@ class ScryfallService {
   }
 
   /// Searches printings by name via `/cards/search`. Uses `unique=prints` so the
-  /// caller can pick among the different printings of a card. Returns an empty
-  /// list when nothing matches (Scryfall replies 404 for no results).
-  Future<List<Map<String, dynamic>>> searchByName(String query) async {
+  /// caller can pick among the different printings of a card. When
+  /// [colorIdentity] is provided (WUBRG letters, or "" for a colorless
+  /// commander), results are restricted to that color identity via Scryfall's
+  /// `id<=` filter — used when adding to a deck that has a commander. Returns an
+  /// empty list when nothing matches (Scryfall replies 404 for no results).
+  Future<List<Map<String, dynamic>>> searchByName(
+    String query, {
+    String? colorIdentity,
+  }) async {
     final trimmed = query.trim();
     if (trimmed.isEmpty) return [];
 
+    var q = trimmed;
+    if (colorIdentity != null) {
+      final ci = colorIdentity.isEmpty ? 'c' : colorIdentity.toLowerCase();
+      q = '$trimmed id<=$ci';
+    }
+
     final uri = Uri.parse('$_base/cards/search').replace(
       queryParameters: {
-        'q': trimmed,
+        'q': q,
         'unique': 'prints',
         'order': 'released',
         'dir': 'desc',

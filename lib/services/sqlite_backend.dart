@@ -2,6 +2,8 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
+import '../models/deck.dart';
+import '../models/deck_card.dart';
 import '../models/folder.dart';
 import '../models/mtg_card.dart';
 import 'card_backend.dart';
@@ -32,7 +34,7 @@ class SqliteBackend implements CardBackend {
     _db = await databaseFactoryFfi.openDatabase(
       dbPath,
       options: OpenDatabaseOptions(
-        version: 1,
+        version: 2,
         onConfigure: (db) => db.execute('PRAGMA foreign_keys = ON'),
         onCreate: (db, version) async {
           await db.execute('''
@@ -53,12 +55,49 @@ class SqliteBackend implements CardBackend {
               price_usd        REAL,
               folder_id        INTEGER,
               colors           TEXT,
+              color_identity   TEXT,
               FOREIGN KEY (folder_id) REFERENCES folders (id) ON DELETE SET NULL
             )
           ''');
+          await _createDeckTables(db);
+        },
+        onUpgrade: (db, oldVersion, newVersion) async {
+          if (oldVersion < 2) {
+            await db.execute('ALTER TABLE cards ADD COLUMN color_identity TEXT');
+            await _createDeckTables(db);
+          }
         },
       ),
     );
+  }
+
+  Future<void> _createDeckTables(Database db) async {
+    await db.execute('''
+      CREATE TABLE decks (
+        id     INTEGER PRIMARY KEY AUTOINCREMENT,
+        name   TEXT NOT NULL,
+        format TEXT
+      )
+    ''');
+    await db.execute('''
+      CREATE TABLE deck_cards (
+        id               INTEGER PRIMARY KEY AUTOINCREMENT,
+        deck_id          INTEGER NOT NULL,
+        name             TEXT NOT NULL,
+        set_code         TEXT NOT NULL,
+        collector_number TEXT NOT NULL,
+        foil             INTEGER NOT NULL DEFAULT 0,
+        quantity         INTEGER NOT NULL DEFAULT 1,
+        image_url        TEXT,
+        price_usd        REAL,
+        colors           TEXT,
+        color_identity   TEXT,
+        cmc              REAL,
+        type_line        TEXT,
+        board            TEXT NOT NULL DEFAULT 'main',
+        FOREIGN KEY (deck_id) REFERENCES decks (id) ON DELETE CASCADE
+      )
+    ''');
   }
 
   /// Closes the database (used in tests and on shutdown).
@@ -77,6 +116,7 @@ class SqliteBackend implements CardBackend {
         'price_usd': c.priceUsd,
         'folder_id': c.folderId,
         'colors': c.colors,
+        'color_identity': c.colorIdentity,
       };
 
   // ---- Cards ---------------------------------------------------------------
@@ -89,6 +129,12 @@ class SqliteBackend implements CardBackend {
   Future<void> setCardColors(int id, String colors) async {
     await _database
         .update('cards', {'colors': colors}, where: 'id = ?', whereArgs: [id]);
+  }
+
+  @override
+  Future<void> setCardColorIdentity(int id, String identity) async {
+    await _database.update('cards', {'color_identity': identity},
+        where: 'id = ?', whereArgs: [id]);
   }
 
   @override
@@ -322,6 +368,110 @@ class SqliteBackend implements CardBackend {
     };
   }
 
+  // ---- Decks ---------------------------------------------------------------
+
+  @override
+  Future<int> addDeck(String name, String? format) =>
+      _database.insert('decks', {'name': name, 'format': format});
+
+  @override
+  Future<List<Deck>> getDecks() async {
+    final rows = await _database.query('decks', orderBy: 'name COLLATE NOCASE ASC');
+    return rows
+        .map((r) => Deck(
+              id: r['id'] as int?,
+              name: r['name'] as String,
+              format: r['format'] as String?,
+            ))
+        .toList();
+  }
+
+  @override
+  Future<void> renameDeck(int id, String name) async {
+    await _database
+        .update('decks', {'name': name}, where: 'id = ?', whereArgs: [id]);
+  }
+
+  @override
+  Future<void> setDeckFormat(int id, String? format) async {
+    await _database
+        .update('decks', {'format': format}, where: 'id = ?', whereArgs: [id]);
+  }
+
+  @override
+  Future<void> deleteDeck(int id) async {
+    await _database.delete('decks', where: 'id = ?', whereArgs: [id]);
+  }
+
+  @override
+  Future<Map<int, int>> deckCardCounts() async {
+    final rows = await _database.rawQuery(
+      'SELECT deck_id, SUM(quantity) AS c FROM deck_cards GROUP BY deck_id',
+    );
+    return {
+      for (final r in rows) r['deck_id'] as int: (r['c'] as int?) ?? 0,
+    };
+  }
+
+  // ---- Deck cards ----------------------------------------------------------
+
+  @override
+  Future<int> addOrMergeDeckCard(DeckCard card) async {
+    final existing = await _database.query(
+      'deck_cards',
+      columns: ['id', 'quantity'],
+      where: 'deck_id = ? AND set_code = ? AND collector_number = ? '
+          'AND foil = ? AND board = ?',
+      whereArgs: [
+        card.deckId,
+        card.setCode,
+        card.collectorNumber,
+        card.foil ? 1 : 0,
+        card.board,
+      ],
+      orderBy: 'id ASC',
+      limit: 1,
+    );
+    if (existing.isNotEmpty) {
+      final id = existing.first['id'] as int;
+      final total = (existing.first['quantity'] as int) + card.quantity;
+      await _database.update('deck_cards', {'quantity': total},
+          where: 'id = ?', whereArgs: [id]);
+      return id;
+    }
+    return _database.insert('deck_cards', _deckToRow(card));
+  }
+
+  @override
+  Future<List<DeckCard>> getDeckCards(int deckId) async {
+    final rows = await _database.query('deck_cards',
+        where: 'deck_id = ?', whereArgs: [deckId], orderBy: 'name COLLATE NOCASE ASC');
+    return rows.map(DeckCard.fromMap).toList();
+  }
+
+  @override
+  Future<void> updateDeckCardQuantity(int id, int quantity) async {
+    await _database.update('deck_cards', {'quantity': quantity},
+        where: 'id = ?', whereArgs: [id]);
+  }
+
+  @override
+  Future<void> setDeckCardBoard(int id, String board) async {
+    await _database.update('deck_cards', {'board': board},
+        where: 'id = ?', whereArgs: [id]);
+  }
+
+  @override
+  Future<void> removeDeckCard(int id) async {
+    await _database.delete('deck_cards', where: 'id = ?', whereArgs: [id]);
+  }
+
+  Map<String, Object?> _deckToRow(DeckCard c) {
+    final m = c.toMap();
+    m.remove('id');
+    return m;
+  }
+
   MtgCard _cardFromRow(Map<String, Object?> r) {
     return MtgCard(
       id: r['id'] as int?,
@@ -334,6 +484,7 @@ class SqliteBackend implements CardBackend {
       priceUsd: (r['price_usd'] as num?)?.toDouble(),
       folderId: r['folder_id'] as int?,
       colors: r['colors'] as String? ?? '',
+      colorIdentity: r['color_identity'] as String? ?? '',
     );
   }
 }

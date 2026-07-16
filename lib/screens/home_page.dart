@@ -6,16 +6,19 @@ import 'package:flutter/material.dart';
 import '../services/collection_store.dart';
 import '../services/csv_export_service.dart';
 import '../services/database_service.dart';
+import '../services/deck_store.dart';
 import 'collection_tab.dart';
+import 'decks_tab.dart';
 import 'import_tab.dart';
 
 enum _ExportFormat { standard, moxfield }
 
-/// The main two-tab screen shown once the database connection is established.
+/// The main three-tab screen shown once the database connection is established.
 class HomePage extends StatelessWidget {
-  const HomePage({super.key, required this.store});
+  const HomePage({super.key, required this.store, required this.deckStore});
 
   final CollectionStore store;
+  final DeckStore deckStore;
 
   Future<void> _export(BuildContext context, _ExportFormat format) async {
     final messenger = ScaffoldMessenger.of(context);
@@ -99,7 +102,7 @@ class HomePage extends StatelessWidget {
   Widget build(BuildContext context) {
     final db = DatabaseService.instance;
     return DefaultTabController(
-      length: 2,
+      length: 3,
       child: Scaffold(
         appBar: AppBar(
           title: const Text('MTG Collection'),
@@ -158,6 +161,7 @@ class HomePage extends StatelessWidget {
             tabs: [
               Tab(icon: Icon(Icons.add_box_outlined), text: 'Import'),
               Tab(icon: Icon(Icons.grid_view), text: 'Collection'),
+              Tab(icon: Icon(Icons.dashboard_customize), text: 'Decks'),
             ],
           ),
         ),
@@ -166,7 +170,8 @@ class HomePage extends StatelessWidget {
           physics: const NeverScrollableScrollPhysics(),
           children: [
             ImportTab(store: store),
-            CollectionTab(store: store),
+            CollectionTab(store: store, deckStore: deckStore),
+            DecksTab(store: deckStore),
           ],
         ),
       ),

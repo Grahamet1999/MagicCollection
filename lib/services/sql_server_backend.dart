@@ -1,5 +1,7 @@
 import 'package:dart_odbc/dart_odbc.dart';
 
+import '../models/deck.dart';
+import '../models/deck_card.dart';
 import '../models/folder.dart';
 import '../models/mtg_card.dart';
 import 'card_backend.dart';
@@ -58,6 +60,10 @@ class SqlServerBackend implements CardBackend {
       "IF COL_LENGTH('dbo.cards', 'colors') IS NULL "
       'ALTER TABLE dbo.cards ADD colors NVARCHAR(10) NULL',
     );
+    await odbc.execute(
+      "IF COL_LENGTH('dbo.cards', 'color_identity') IS NULL "
+      'ALTER TABLE dbo.cards ADD color_identity NVARCHAR(10) NULL',
+    );
   }
 
   Future<void> _createSchema(DartOdbc odbc) async {
@@ -81,8 +87,38 @@ class SqlServerBackend implements CardBackend {
         price_usd        DECIMAL(12,2),
         folder_id        INT NULL,
         colors           NVARCHAR(10) NULL,
+        color_identity   NVARCHAR(10) NULL,
         CONSTRAINT FK_cards_folder FOREIGN KEY (folder_id)
           REFERENCES dbo.folders (id) ON DELETE SET NULL
+      )
+    ''');
+    await odbc.execute('''
+      IF OBJECT_ID('dbo.decks', 'U') IS NULL
+      CREATE TABLE dbo.decks (
+        id     INT IDENTITY(1,1) PRIMARY KEY,
+        name   NVARCHAR(255) NOT NULL,
+        format NVARCHAR(50) NULL
+      )
+    ''');
+    await odbc.execute('''
+      IF OBJECT_ID('dbo.deck_cards', 'U') IS NULL
+      CREATE TABLE dbo.deck_cards (
+        id               INT IDENTITY(1,1) PRIMARY KEY,
+        deck_id          INT NOT NULL,
+        name             NVARCHAR(255) NOT NULL,
+        set_code         NVARCHAR(50)  NOT NULL,
+        collector_number NVARCHAR(50)  NOT NULL,
+        foil             BIT NOT NULL DEFAULT 0,
+        quantity         INT NOT NULL DEFAULT 1,
+        image_url        NVARCHAR(1000),
+        price_usd        DECIMAL(12,2),
+        colors           NVARCHAR(10) NULL,
+        color_identity   NVARCHAR(10) NULL,
+        cmc              DECIMAL(6,2) NULL,
+        type_line        NVARCHAR(255) NULL,
+        board            NVARCHAR(20) NOT NULL DEFAULT 'main',
+        CONSTRAINT FK_deck_cards_deck FOREIGN KEY (deck_id)
+          REFERENCES dbo.decks (id) ON DELETE CASCADE
       )
     ''');
   }
@@ -93,11 +129,12 @@ class SqlServerBackend implements CardBackend {
   Future<int> addCard(MtgCard card) async {
     final rows = await _db.execute(
       'INSERT INTO dbo.cards '
-      '(name, set_code, collector_number, foil, quantity, image_url, price_usd, folder_id, colors) '
+      '(name, set_code, collector_number, foil, quantity, image_url, price_usd, folder_id, colors, color_identity) '
       'OUTPUT INSERTED.id AS id VALUES ('
       '${_lit(card.name)}, ${_lit(card.setCode)}, ${_lit(card.collectorNumber)}, '
       '${_lit(card.foil)}, ${_lit(card.quantity)}, ${_lit(card.imageUrl)}, '
-      '${_lit(card.priceUsd)}, ${_lit(card.folderId)}, ${_lit(card.colors)})',
+      '${_lit(card.priceUsd)}, ${_lit(card.folderId)}, ${_lit(card.colors)}, '
+      '${_lit(card.colorIdentity)})',
     );
     return _asInt(rows.isNotEmpty ? rows.first['id'] : null) ?? -1;
   }
@@ -106,6 +143,14 @@ class SqlServerBackend implements CardBackend {
   Future<void> setCardColors(int id, String colors) async {
     await _db.execute(
       'UPDATE dbo.cards SET colors = ${_lit(colors)} WHERE id = ${_lit(id)}',
+    );
+  }
+
+  @override
+  Future<void> setCardColorIdentity(int id, String identity) async {
+    await _db.execute(
+      'UPDATE dbo.cards SET color_identity = ${_lit(identity)} '
+      'WHERE id = ${_lit(id)}',
     );
   }
 
@@ -221,7 +266,7 @@ class SqlServerBackend implements CardBackend {
     final rows = await _db.execute(
       'SELECT id, name, set_code, collector_number, '
       'CAST(foil AS INT) AS foil, quantity, '
-      'image_url, price_usd, folder_id, colors '
+      'image_url, price_usd, folder_id, colors, color_identity '
       'FROM dbo.cards $clause ORDER BY ${_orderBy(sort, ascending)}',
     );
     return rows.map(_cardFromRow).toList();
@@ -335,6 +380,129 @@ class SqlServerBackend implements CardBackend {
     };
   }
 
+  // ---- Decks ---------------------------------------------------------------
+
+  @override
+  Future<int> addDeck(String name, String? format) async {
+    final rows = await _db.execute(
+      'INSERT INTO dbo.decks (name, format) OUTPUT INSERTED.id AS id '
+      'VALUES (${_lit(name)}, ${_lit(format)})',
+    );
+    return _asInt(rows.isNotEmpty ? rows.first['id'] : null) ?? -1;
+  }
+
+  @override
+  Future<List<Deck>> getDecks() async {
+    final rows = await _db.execute(
+      'SELECT id, name, format FROM dbo.decks ORDER BY name ASC',
+    );
+    return rows
+        .map((r) => Deck(
+              id: _asInt(r['id']),
+              name: r['name'] as String,
+              format: r['format'] as String?,
+            ))
+        .toList();
+  }
+
+  @override
+  Future<void> renameDeck(int id, String name) async {
+    await _db.execute(
+      'UPDATE dbo.decks SET name = ${_lit(name)} WHERE id = ${_lit(id)}',
+    );
+  }
+
+  @override
+  Future<void> setDeckFormat(int id, String? format) async {
+    await _db.execute(
+      'UPDATE dbo.decks SET format = ${_lit(format)} WHERE id = ${_lit(id)}',
+    );
+  }
+
+  @override
+  Future<void> deleteDeck(int id) async {
+    await _db.execute('DELETE FROM dbo.decks WHERE id = ${_lit(id)}');
+  }
+
+  @override
+  Future<Map<int, int>> deckCardCounts() async {
+    final rows = await _db.execute(
+      'SELECT deck_id, SUM(quantity) AS c FROM dbo.deck_cards '
+      'GROUP BY deck_id',
+    );
+    return {
+      for (final r in rows) _asInt(r['deck_id'])!: _asInt(r['c']) ?? 0,
+    };
+  }
+
+  // ---- Deck cards ----------------------------------------------------------
+
+  @override
+  Future<int> addOrMergeDeckCard(DeckCard card) async {
+    final existing = await _db.execute(
+      'SELECT TOP 1 id, quantity FROM dbo.deck_cards '
+      'WHERE deck_id = ${_lit(card.deckId)} '
+      'AND set_code = ${_lit(card.setCode)} '
+      'AND collector_number = ${_lit(card.collectorNumber)} '
+      'AND foil = ${_lit(card.foil)} '
+      'AND board = ${_lit(card.board)} '
+      'ORDER BY id ASC',
+    );
+    if (existing.isNotEmpty) {
+      final id = _asInt(existing.first['id'])!;
+      final total = (_asInt(existing.first['quantity']) ?? 0) + card.quantity;
+      await _db.execute(
+        'UPDATE dbo.deck_cards SET quantity = ${_lit(total)} '
+        'WHERE id = ${_lit(id)}',
+      );
+      return id;
+    }
+    final rows = await _db.execute(
+      'INSERT INTO dbo.deck_cards '
+      '(deck_id, name, set_code, collector_number, foil, quantity, image_url, '
+      'price_usd, colors, color_identity, cmc, type_line, board) '
+      'OUTPUT INSERTED.id AS id VALUES ('
+      '${_lit(card.deckId)}, ${_lit(card.name)}, ${_lit(card.setCode)}, '
+      '${_lit(card.collectorNumber)}, ${_lit(card.foil)}, ${_lit(card.quantity)}, '
+      '${_lit(card.imageUrl)}, ${_lit(card.priceUsd)}, ${_lit(card.colors)}, '
+      '${_lit(card.colorIdentity)}, ${_lit(card.cmc)}, ${_lit(card.typeLine)}, '
+      '${_lit(card.board)})',
+    );
+    return _asInt(rows.isNotEmpty ? rows.first['id'] : null) ?? -1;
+  }
+
+  @override
+  Future<List<DeckCard>> getDeckCards(int deckId) async {
+    final rows = await _db.execute(
+      'SELECT id, deck_id, name, set_code, collector_number, '
+      'CAST(foil AS INT) AS foil, quantity, image_url, price_usd, colors, '
+      'color_identity, cmc, type_line, board '
+      'FROM dbo.deck_cards WHERE deck_id = ${_lit(deckId)} '
+      'ORDER BY name ASC',
+    );
+    return rows.map(_deckCardFromRow).toList();
+  }
+
+  @override
+  Future<void> updateDeckCardQuantity(int id, int quantity) async {
+    await _db.execute(
+      'UPDATE dbo.deck_cards SET quantity = ${_lit(quantity)} '
+      'WHERE id = ${_lit(id)}',
+    );
+  }
+
+  @override
+  Future<void> setDeckCardBoard(int id, String board) async {
+    await _db.execute(
+      'UPDATE dbo.deck_cards SET board = ${_lit(board)} WHERE id = ${_lit(id)}',
+    );
+  }
+
+  @override
+  Future<void> removeDeckCard(int id) async {
+    await _db.execute('DELETE FROM dbo.deck_cards WHERE id = ${_lit(id)}');
+  }
+
   // ---- Helpers -------------------------------------------------------------
 
   static String _lit(Object? value) {
@@ -358,6 +526,26 @@ class SqlServerBackend implements CardBackend {
       priceUsd: _asDouble(r['price_usd']),
       folderId: _asInt(r['folder_id']),
       colors: r['colors'] as String? ?? '',
+      colorIdentity: r['color_identity'] as String? ?? '',
+    );
+  }
+
+  DeckCard _deckCardFromRow(Map<String, dynamic> r) {
+    return DeckCard(
+      id: _asInt(r['id']),
+      deckId: _asInt(r['deck_id'])!,
+      name: r['name'] as String,
+      setCode: r['set_code'] as String,
+      collectorNumber: r['collector_number'] as String,
+      foil: _asBool(r['foil']),
+      quantity: _asInt(r['quantity']) ?? 1,
+      imageUrl: r['image_url'] as String?,
+      priceUsd: _asDouble(r['price_usd']),
+      colors: r['colors'] as String? ?? '',
+      colorIdentity: r['color_identity'] as String? ?? '',
+      cmc: _asDouble(r['cmc']) ?? 0,
+      typeLine: r['type_line'] as String? ?? '',
+      board: r['board'] as String? ?? DeckBoard.main,
     );
   }
 

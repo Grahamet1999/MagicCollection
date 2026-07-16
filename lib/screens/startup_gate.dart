@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../services/collection_store.dart';
 import '../services/database_service.dart';
 import '../services/db_config.dart';
+import '../services/deck_store.dart';
 import 'home_page.dart';
 
 /// Gates the app on a successful database connection.
@@ -11,9 +12,10 @@ import 'home_page.dart';
 /// readable error screen with the underlying message and a Retry button, so the
 /// user can fix their server/connection and try again without relaunching.
 class StartupGate extends StatefulWidget {
-  const StartupGate({super.key, required this.store});
+  const StartupGate({super.key, required this.store, required this.deckStore});
 
   final CollectionStore store;
+  final DeckStore deckStore;
 
   @override
   State<StartupGate> createState() => _StartupGateState();
@@ -36,6 +38,7 @@ class _StartupGateState extends State<StartupGate> {
     try {
       await DatabaseService.instance.init();
       await widget.store.load();
+      await widget.deckStore.load();
       if (mounted) setState(() => _status = _Status.ready);
     } catch (e) {
       if (mounted) {
@@ -51,7 +54,7 @@ class _StartupGateState extends State<StartupGate> {
   Widget build(BuildContext context) {
     switch (_status) {
       case _Status.ready:
-        return HomePage(store: widget.store);
+        return HomePage(store: widget.store, deckStore: widget.deckStore);
       case _Status.connecting:
         return const Scaffold(
           body: Center(

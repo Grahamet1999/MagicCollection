@@ -1,3 +1,5 @@
+import '../models/deck.dart';
+import '../models/deck_card.dart';
 import '../models/folder.dart';
 import '../models/mtg_card.dart';
 
@@ -9,6 +11,7 @@ abstract class CardBackend {
   // Cards
   Future<int> addCard(MtgCard card);
   Future<void> setCardColors(int id, String colors);
+  Future<void> setCardColorIdentity(int id, String identity);
   Future<void> setCardPrice(int id, double price);
   Future<AddResult> addOrMergeCard(MtgCard card);
   Future<void> moveQuantityToFolder(MtgCard card, int qty, int? destFolderId);
@@ -29,6 +32,21 @@ abstract class CardBackend {
   Future<void> renameFolder(int id, String name);
   Future<void> deleteFolder(int id);
   Future<Map<int, int>> folderCardCounts();
+
+  // Decks
+  Future<int> addDeck(String name, String? format);
+  Future<List<Deck>> getDecks();
+  Future<void> renameDeck(int id, String name);
+  Future<void> setDeckFormat(int id, String? format);
+  Future<void> deleteDeck(int id);
+  Future<Map<int, int>> deckCardCounts();
+
+  // Deck cards
+  Future<int> addOrMergeDeckCard(DeckCard card);
+  Future<List<DeckCard>> getDeckCards(int deckId);
+  Future<void> updateDeckCardQuantity(int id, int quantity);
+  Future<void> setDeckCardBoard(int id, String board);
+  Future<void> removeDeckCard(int id);
 }
 
 /// Outcome of [CardBackend.addOrMergeCard].

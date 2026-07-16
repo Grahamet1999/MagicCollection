@@ -1,3 +1,5 @@
+import '../models/deck.dart';
+import '../models/deck_card.dart';
 import '../models/folder.dart';
 import '../models/mtg_card.dart';
 import 'card_backend.dart';
@@ -58,6 +60,8 @@ class DatabaseService {
   Future<int> addCard(MtgCard card) => _b.addCard(card);
   Future<void> setCardColors(int id, String colors) =>
       _b.setCardColors(id, colors);
+  Future<void> setCardColorIdentity(int id, String identity) =>
+      _b.setCardColorIdentity(id, identity);
   Future<void> setCardPrice(int id, double price) =>
       _b.setCardPrice(id, price);
   Future<AddResult> addOrMergeCard(MtgCard card) => _b.addOrMergeCard(card);
@@ -87,4 +91,22 @@ class DatabaseService {
   Future<void> renameFolder(int id, String name) => _b.renameFolder(id, name);
   Future<void> deleteFolder(int id) => _b.deleteFolder(id);
   Future<Map<int, int>> folderCardCounts() => _b.folderCardCounts();
+
+  // ---- Decks (forwarded) ---------------------------------------------------
+
+  Future<int> addDeck(String name, String? format) =>
+      _b.addDeck(name, format);
+  Future<List<Deck>> getDecks() => _b.getDecks();
+  Future<void> renameDeck(int id, String name) => _b.renameDeck(id, name);
+  Future<void> setDeckFormat(int id, String? format) =>
+      _b.setDeckFormat(id, format);
+  Future<void> deleteDeck(int id) => _b.deleteDeck(id);
+  Future<Map<int, int>> deckCardCounts() => _b.deckCardCounts();
+  Future<int> addOrMergeDeckCard(DeckCard card) => _b.addOrMergeDeckCard(card);
+  Future<List<DeckCard>> getDeckCards(int deckId) => _b.getDeckCards(deckId);
+  Future<void> updateDeckCardQuantity(int id, int quantity) =>
+      _b.updateDeckCardQuantity(id, quantity);
+  Future<void> setDeckCardBoard(int id, String board) =>
+      _b.setDeckCardBoard(id, board);
+  Future<void> removeDeckCard(int id) => _b.removeDeckCard(id);
 }

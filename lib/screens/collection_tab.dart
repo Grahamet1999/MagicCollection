@@ -1,18 +1,23 @@
 import 'package:flutter/material.dart';
 
+import '../models/deck.dart';
+import '../models/deck_card.dart';
 import '../models/folder.dart';
 import '../models/mtg_card.dart';
 import '../services/collection_store.dart';
 import '../services/database_service.dart';
+import '../services/deck_store.dart';
+import '../services/scryfall_service.dart';
 import '../widgets/card_image.dart';
 
 /// Collection tab: browse all stored cards with a folder sidebar and a
 /// search/filter bar. Cards always live in the overall collection and may be
 /// filed into at most one folder.
 class CollectionTab extends StatefulWidget {
-  const CollectionTab({super.key, required this.store});
+  const CollectionTab({super.key, required this.store, required this.deckStore});
 
   final CollectionStore store;
+  final DeckStore deckStore;
 
   @override
   State<CollectionTab> createState() => _CollectionTabState();
@@ -260,6 +265,7 @@ class _CollectionTabState extends State<CollectionTab> {
         return _CardTile(
           card: card,
           store: store,
+          deckStore: widget.deckStore,
           selectionMode: _selectionMode,
           selected: _selected.contains(card.id),
           onToggle: () => _toggleSelection(card.id!),
@@ -521,6 +527,7 @@ class _CardTile extends StatelessWidget {
   const _CardTile({
     required this.card,
     required this.store,
+    required this.deckStore,
     this.selectionMode = false,
     this.selected = false,
     this.onToggle,
@@ -528,6 +535,7 @@ class _CardTile extends StatelessWidget {
 
   final MtgCard card;
   final CollectionStore store;
+  final DeckStore deckStore;
   final bool selectionMode;
   final bool selected;
   final VoidCallback? onToggle;
@@ -608,6 +616,8 @@ class _CardTile extends StatelessWidget {
                     onSelected: (v) => _onAction(context, v),
                     itemBuilder: (_) => [
                       const PopupMenuItem(
+                          value: 'add_to_deck', child: Text('Add to deck…')),
+                      const PopupMenuItem(
                           value: 'move', child: Text('Move to folder…')),
                       if (card.quantity > 1)
                         const PopupMenuItem(
@@ -657,6 +667,8 @@ class _CardTile extends StatelessWidget {
 
   void _onAction(BuildContext context, String action) {
     switch (action) {
+      case 'add_to_deck':
+        _addToDeck(context);
       case 'move':
         _moveToFolder(context);
       case 'split':
@@ -666,6 +678,64 @@ class _CardTile extends StatelessWidget {
       case 'delete':
         store.deleteCard(card.id!);
     }
+  }
+
+  Future<void> _addToDeck(BuildContext context) async {
+    if (deckStore.decks.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Create a deck first (Decks tab).')),
+      );
+      return;
+    }
+    final messenger = ScaffoldMessenger.of(context);
+    final pick = await showDialog<_DeckPick>(
+      context: context,
+      builder: (_) => _DeckPickDialog(card: card, deckStore: deckStore),
+    );
+    if (pick == null) return;
+
+    // Enrich with cmc / type_line from Scryfall so the card groups and curves
+    // correctly (the collection doesn't store those). Falls back to the stored
+    // fields if the lookup fails.
+    final scryfall = ScryfallService();
+    DeckCard deckCard;
+    try {
+      final json = await scryfall.getBySetAndNumber(
+          card.setCode, card.collectorNumber);
+      deckCard = json != null
+          ? DeckCard.fromScryfall(json,
+              deckId: pick.deckId, foil: card.foil, board: pick.board)
+          : _deckCardFromCollection(pick.deckId, pick.board);
+    } catch (_) {
+      deckCard = _deckCardFromCollection(pick.deckId, pick.board);
+    } finally {
+      scryfall.dispose();
+    }
+
+    await deckStore.addCard(deckCard);
+    final deckName = deckStore.decks
+        .firstWhere((d) => d.id == pick.deckId,
+            orElse: () => const Deck(name: 'deck'))
+        .name;
+    messenger.showSnackBar(
+      SnackBar(content: Text('Added ${card.name} to "$deckName".')),
+    );
+  }
+
+  DeckCard _deckCardFromCollection(int deckId, String board) {
+    return DeckCard(
+      deckId: deckId,
+      name: card.name,
+      setCode: card.setCode,
+      collectorNumber: card.collectorNumber,
+      foil: card.foil,
+      quantity: 1,
+      imageUrl: card.imageUrl,
+      priceUsd: card.priceUsd,
+      colors: card.colors,
+      colorIdentity: card.colorIdentity,
+      board: board,
+    );
   }
 
   Future<void> _moveToFolder(BuildContext context) async {
@@ -844,6 +914,75 @@ class _AggregatedTile extends StatelessWidget {
 class _MoveResult {
   const _MoveResult({required this.folderId});
   final int? folderId;
+}
+
+class _DeckPick {
+  const _DeckPick({required this.deckId, required this.board});
+  final int deckId;
+  final String board;
+}
+
+/// Dialog to choose which deck (and board) to add a collection card to.
+class _DeckPickDialog extends StatefulWidget {
+  const _DeckPickDialog({required this.card, required this.deckStore});
+
+  final MtgCard card;
+  final DeckStore deckStore;
+
+  @override
+  State<_DeckPickDialog> createState() => _DeckPickDialogState();
+}
+
+class _DeckPickDialogState extends State<_DeckPickDialog> {
+  late int _deckId = widget.deckStore.decks.first.id!;
+  String _board = DeckBoard.main;
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text('Add "${widget.card.name}" to deck'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          DropdownButton<int>(
+            isExpanded: true,
+            value: _deckId,
+            items: [
+              for (final d in widget.deckStore.decks)
+                DropdownMenuItem(value: d.id, child: Text(d.name)),
+            ],
+            onChanged: (v) => setState(() => _deckId = v!),
+          ),
+          const SizedBox(height: 12),
+          SegmentedButton<String>(
+            segments: const [
+              ButtonSegment(value: DeckBoard.commander, label: Text('Cmdr')),
+              ButtonSegment(value: DeckBoard.main, label: Text('Main')),
+              ButtonSegment(value: DeckBoard.side, label: Text('Side')),
+            ],
+            selected: {_board},
+            onSelectionChanged: (s) => setState(() => _board = s.first),
+          ),
+          const Padding(
+            padding: EdgeInsets.only(top: 8),
+            child: Text('Adding to a deck does not change your collection.'),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.pop(
+              context, _DeckPick(deckId: _deckId, board: _board)),
+          child: const Text('Add'),
+        ),
+      ],
+    );
+  }
 }
 
 class _SplitResult {

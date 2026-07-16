@@ -1,12 +1,18 @@
 import 'scryfall_parse.dart' as sf;
 
-/// A single Magic: The Gathering card stored in the local collection.
-///
-/// A card always belongs to the overall collection. It may optionally live in
-/// exactly one [folder] via [folderId]; a null [folderId] means "no folder"
-/// (still in the collection, just unfiled).
-class MtgCard {
+/// Board a deck card belongs to.
+class DeckBoard {
+  static const String commander = 'commander';
+  static const String main = 'main';
+  static const String side = 'side';
+}
+
+/// A card in a deck. Stores a full printing snapshot so decks are independent of
+/// the collection (adding to a deck never touches collection quantities), plus
+/// the fields needed for grouping, the mana curve, and the commander filter.
+class DeckCard {
   final int? id;
+  final int deckId;
   final String name;
   final String setCode;
   final String collectorNumber;
@@ -14,17 +20,17 @@ class MtgCard {
   final int quantity;
   final String? imageUrl;
   final double? priceUsd;
-  final int? folderId;
-
-  /// Card colors in WUBRG order, e.g. "W", "WU", or "" for colorless.
   final String colors;
-
-  /// Color identity in WUBRG order (includes mana symbols in rules text), used
-  /// for commander color-identity filtering. "" = colorless.
   final String colorIdentity;
+  final double cmc;
+  final String typeLine;
 
-  const MtgCard({
+  /// One of [DeckBoard.commander] / [DeckBoard.main] / [DeckBoard.side].
+  final String board;
+
+  const DeckCard({
     this.id,
+    required this.deckId,
     required this.name,
     required this.setCode,
     required this.collectorNumber,
@@ -32,13 +38,18 @@ class MtgCard {
     this.quantity = 1,
     this.imageUrl,
     this.priceUsd,
-    this.folderId,
     this.colors = '',
     this.colorIdentity = '',
+    this.cmc = 0,
+    this.typeLine = '',
+    this.board = DeckBoard.main,
   });
 
-  MtgCard copyWith({
+  sf.CardType get primaryType => sf.primaryType(typeLine);
+
+  DeckCard copyWith({
     int? id,
+    int? deckId,
     String? name,
     String? setCode,
     String? collectorNumber,
@@ -48,11 +59,13 @@ class MtgCard {
     double? priceUsd,
     String? colors,
     String? colorIdentity,
-    // Use a sentinel so callers can explicitly clear the folder (set to null).
-    Object? folderId = _noChange,
+    double? cmc,
+    String? typeLine,
+    String? board,
   }) {
-    return MtgCard(
+    return DeckCard(
       id: id ?? this.id,
+      deckId: deckId ?? this.deckId,
       name: name ?? this.name,
       setCode: setCode ?? this.setCode,
       collectorNumber: collectorNumber ?? this.collectorNumber,
@@ -62,33 +75,16 @@ class MtgCard {
       priceUsd: priceUsd ?? this.priceUsd,
       colors: colors ?? this.colors,
       colorIdentity: colorIdentity ?? this.colorIdentity,
-      folderId: folderId == _noChange ? this.folderId : folderId as int?,
+      cmc: cmc ?? this.cmc,
+      typeLine: typeLine ?? this.typeLine,
+      board: board ?? this.board,
     );
-  }
-
-  /// Sort rank for color: W, U, B, R, G, then multicolor, then colorless.
-  static int colorRank(String colors) {
-    if (colors.isEmpty) return 7; // colorless
-    if (colors.length > 1) return 6; // multicolor
-    switch (colors) {
-      case 'W':
-        return 1;
-      case 'U':
-        return 2;
-      case 'B':
-        return 3;
-      case 'R':
-        return 4;
-      case 'G':
-        return 5;
-      default:
-        return 8;
-    }
   }
 
   Map<String, Object?> toMap() {
     return {
       'id': id,
+      'deck_id': deckId,
       'name': name,
       'set_code': setCode,
       'collector_number': collectorNumber,
@@ -96,15 +92,18 @@ class MtgCard {
       'quantity': quantity,
       'image_url': imageUrl,
       'price_usd': priceUsd,
-      'folder_id': folderId,
       'colors': colors,
       'color_identity': colorIdentity,
+      'cmc': cmc,
+      'type_line': typeLine,
+      'board': board,
     };
   }
 
-  factory MtgCard.fromMap(Map<String, Object?> map) {
-    return MtgCard(
+  factory DeckCard.fromMap(Map<String, Object?> map) {
+    return DeckCard(
       id: map['id'] as int?,
+      deckId: map['deck_id'] as int,
       name: map['name'] as String,
       setCode: map['set_code'] as String,
       collectorNumber: map['collector_number'] as String,
@@ -112,20 +111,24 @@ class MtgCard {
       quantity: map['quantity'] as int? ?? 1,
       imageUrl: map['image_url'] as String?,
       priceUsd: (map['price_usd'] as num?)?.toDouble(),
-      folderId: map['folder_id'] as int?,
       colors: map['colors'] as String? ?? '',
       colorIdentity: map['color_identity'] as String? ?? '',
+      cmc: (map['cmc'] as num?)?.toDouble() ?? 0,
+      typeLine: map['type_line'] as String? ?? '',
+      board: map['board'] as String? ?? DeckBoard.main,
     );
   }
 
-  /// Builds a card from a Scryfall card JSON object (e.g. from
-  /// `/cards/:set/:number` or a `/cards/search` result entry).
-  factory MtgCard.fromScryfall(
+  /// Builds a deck card from Scryfall JSON for [deckId] on [board].
+  factory DeckCard.fromScryfall(
     Map<String, dynamic> json, {
+    required int deckId,
     bool foil = false,
     int quantity = 1,
+    String board = DeckBoard.main,
   }) {
-    return MtgCard(
+    return DeckCard(
+      deckId: deckId,
       name: json['name'] as String? ?? 'Unknown',
       setCode: (json['set'] as String? ?? '').toUpperCase(),
       collectorNumber: json['collector_number'] as String? ?? '',
@@ -135,8 +138,9 @@ class MtgCard {
       priceUsd: sf.priceFromScryfall(json, foil),
       colors: sf.colorsFromScryfall(json),
       colorIdentity: sf.colorIdentityFromScryfall(json),
+      cmc: sf.cmcFromScryfall(json),
+      typeLine: sf.typeLineFromScryfall(json),
+      board: board,
     );
   }
 }
-
-const Object _noChange = Object();
