@@ -111,6 +111,54 @@ class _GroupsScreenState extends State<GroupsScreen> {
     });
   }
 
+  Future<void> _leaveGroup(Group group) async {
+    final ok = await _confirm(
+      'Leave "${group.name}"?',
+      'Your published cards are removed from this group. Your local '
+          'collection is unaffected.',
+    );
+    if (!ok) return;
+    await _sub?.cancel();
+    await _guard(() => widget.groups.leaveGroup(group.id));
+    setState(() => _selected = null);
+    await _loadGroups();
+  }
+
+  Future<void> _deleteGroup(Group group) async {
+    final ok = await _confirm(
+      'Delete "${group.name}"?',
+      'This deletes the group for everyone and removes all pooled cards. It '
+          'cannot be undone. (Your local collection is unaffected.)',
+    );
+    if (!ok) return;
+    await _sub?.cancel();
+    await _guard(() => widget.groups.deleteGroup(group));
+    setState(() => _selected = null);
+    await _loadGroups();
+  }
+
+  Future<bool> _confirm(String title, String body) async {
+    final r = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(title),
+        content: Text(body),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel')),
+          FilledButton(
+            style: FilledButton.styleFrom(
+                backgroundColor: Theme.of(context).colorScheme.error),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Confirm'),
+          ),
+        ],
+      ),
+    );
+    return r ?? false;
+  }
+
   Future<void> _publish() async {
     if (_selected == null) return;
     setState(() => _publishing = true);
@@ -318,6 +366,23 @@ class _GroupsScreenState extends State<GroupsScreen> {
                 const SizedBox(width: 8),
                 Text('${group.members.length} member'
                     '${group.members.length == 1 ? '' : 's'}'),
+                const SizedBox(width: 4),
+                PopupMenuButton<String>(
+                  tooltip: 'Group options',
+                  icon: const Icon(Icons.more_vert),
+                  onSelected: (v) {
+                    if (v == 'leave') _leaveGroup(group);
+                    if (v == 'delete') _deleteGroup(group);
+                  },
+                  itemBuilder: (_) => [
+                    if (group.ownerUid == _uid)
+                      const PopupMenuItem(
+                          value: 'delete', child: Text('Delete group'))
+                    else
+                      const PopupMenuItem(
+                          value: 'leave', child: Text('Leave group')),
+                  ],
+                ),
               ],
               const Spacer(),
               FilledButton.icon(

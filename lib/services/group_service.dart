@@ -120,6 +120,25 @@ class GroupService {
     await _delete('users/$uid/groups/$gid');
   }
 
+  /// Deletes a group entirely (owner only). Removes the group record, its invite
+  /// code, and the owner's data. Other members' orphaned pointers are harmless
+  /// (they're skipped when listing groups).
+  Future<void> deleteGroup(Group group) async {
+    final uid = _auth.currentUser!.uid;
+    // Own cards first (always permitted while a member).
+    try {
+      await _delete('groupCards/${group.id}/$uid');
+    } catch (_) {}
+    // Whole pooled-cards node — works if rules grant the owner group-wide write;
+    // best-effort otherwise.
+    try {
+      await _delete('groupCards/${group.id}');
+    } catch (_) {}
+    await _delete('invites/${group.inviteCode}');
+    await _delete('users/$uid/groups/${group.id}');
+    await _delete('groups/${group.id}'); // owner-only per rules; makes it vanish
+  }
+
   Future<Group?> _fetchGroup(String gid) async {
     final json = await _get('groups/$gid');
     if (json is! Map) return null;

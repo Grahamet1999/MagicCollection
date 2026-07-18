@@ -41,6 +41,7 @@ In **Realtime Database → Rules**, paste this and **Publish**:
     "groupCards": {
       "$gid": {
         ".read": "auth != null && root.child('groups').child($gid).child('members').child(auth.uid).exists()",
+        ".write": "auth != null && root.child('groups').child($gid).child('ownerUid').val() === auth.uid",
         "$uid": {
           ".write": "auth != null && auth.uid === $uid && root.child('groups').child($gid).child('members').child(auth.uid).exists()"
         }
