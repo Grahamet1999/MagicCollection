@@ -58,26 +58,32 @@ What these enforce:
   removal). Reads require membership.
 - Invite codes are readable by any signed-in user so joining works.
 
-## 3. Copy the config into the app
+## 3. Create the config file (kept out of git)
 In **Project settings → General → Your apps**, add a **Web app** (or use an existing
-one) and copy its config values. Fill in
-[`lib/services/firebase_config.dart`](../lib/services/firebase_config.dart):
+one) and copy its config values. Then create a **`firebase_config.json`** file with them:
 
-```dart
-static const String apiKey = 'AIzaSy...';            // Web API key
-static const String projectId = 'your-project-id';
-static const String databaseUrl =
-    'https://your-project-id-default-rtdb.firebaseio.com';
+```json
+{
+  "apiKey": "AIzaSy...",
+  "projectId": "your-project-id",
+  "databaseUrl": "https://your-project-id-default-rtdb.firebaseio.com"
+}
 ```
 
-The Web API key is **not a secret** — it ships in every Firebase web app; access is
-controlled by the rules above. Rebuild the app; the **Sign in** button and **Groups**
-appear once `firebase_config.dart` is filled in.
+This file is **gitignored** so the API key is never committed. Put it in **either**:
+- **next to `mtg_collection.exe`** (inside the `MTGApp` folder) — easiest for a packaged
+  build and for sharing with friends in the zip; or
+- the app-support folder: `%APPDATA%\com.mtgapp\mtg_collection\firebase_config.json`.
+
+The app reads it at launch (checking beside the exe first, then app-support). The Web API
+key is **not a secret** — it ships in every Firebase web app and access is controlled by
+the rules above — but keeping it in this file avoids committing it to a public repo. The
+**Sign in** button and **Groups** appear once the file is present with values.
 
 ## 4. (Optional) Test with the emulator
 To try it without touching production, install the Firebase CLI and run
-`firebase emulators:start --only auth,database`, then point `apiKey`/`databaseUrl` at the
-emulator endpoints. Otherwise just create two real accounts to test end-to-end.
+`firebase emulators:start --only auth,database`, then point `databaseUrl` at the emulator
+endpoint. Otherwise just create two real accounts to test end-to-end.
 
 ## How it's used
 - Sign in (top-right) → **Account → Groups…**.

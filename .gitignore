@@ -48,3 +48,6 @@ app.*.map.json
 *.tar.xz
 *.tar.zst
 *.zip
+
+# Local Firebase config (contains the project's API key) — never commit
+firebase_config.json
