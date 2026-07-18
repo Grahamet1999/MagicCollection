@@ -58,27 +58,25 @@ What these enforce:
   removal). Reads require membership.
 - Invite codes are readable by any signed-in user so joining works.
 
-## 3. Create the config file (kept out of git)
+## 3. Put the config into the app
 In **Project settings → General → Your apps**, add a **Web app** (or use an existing
-one) and copy its config values. Then create a **`firebase_config.json`** file with them:
+one) and copy its config values into
+[`lib/services/firebase_config.dart`](../lib/services/firebase_config.dart):
 
-```json
-{
-  "apiKey": "AIzaSy...",
-  "projectId": "your-project-id",
-  "databaseUrl": "https://your-project-id-default-rtdb.firebaseio.com"
-}
+```dart
+static const String apiKey = 'AIzaSy...';
+static const String projectId = 'your-project-id';
+static const String databaseUrl =
+    'https://your-project-id-default-rtdb.firebaseio.com';
 ```
 
-This file is **gitignored** so the API key is never committed. Put it in **either**:
-- **next to `mtg_collection.exe`** (inside the `MTGApp` folder) — easiest for a packaged
-  build and for sharing with friends in the zip; or
-- the app-support folder: `%APPDATA%\com.mtgapp\mtg_collection\firebase_config.json`.
+These compile into the app, so the packaged build is self-contained (nothing extra to
+ship). Rebuild and the **Sign in** button and **Groups** appear.
 
-The app reads it at launch (checking beside the exe first, then app-support). The Web API
-key is **not a secret** — it ships in every Firebase web app and access is controlled by
-the rules above — but keeping it in this file avoids committing it to a public repo. The
-**Sign in** button and **Groups** appear once the file is present with values.
+The Web API key is **not a secret** — it ships in every Firebase web app, and access is
+controlled by the security rules above. For defence in depth, restrict the key in
+**Google Cloud Console → APIs & Services → Credentials** to just the *Identity Toolkit
+API* and *Firebase Realtime Database*.
 
 ## 4. (Optional) Test with the emulator
 To try it without touching production, install the Firebase CLI and run

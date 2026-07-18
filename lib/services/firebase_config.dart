@@ -1,56 +1,18 @@
-import 'dart:convert';
-import 'dart:io';
-
-import 'package:path/path.dart' as p;
-import 'package:path_provider/path_provider.dart';
-
 /// Firebase project settings for the cloud "group binder" feature.
 ///
-/// Values are loaded at runtime from a `firebase_config.json` file that is kept
-/// OUT of source control (gitignored), so the API key is never committed. The
-/// file is looked up next to the executable first, then in the app-support
-/// directory. See docs/firebase_setup.md for its shape and how to create it.
+/// These values are compiled into the app, so the packaged build is
+/// self-contained (no extra config file to ship). The Web API key is safe to
+/// embed — it is not a secret; access is controlled by Realtime Database
+/// security rules, and the key is API-restricted in Google Cloud. See
+/// docs/firebase_setup.md.
 ///
-/// Until the file is present with values, [isConfigured] is false and the
-/// cloud/Groups features are hidden; the rest of the app works on local storage.
+/// Leave the values blank to disable the cloud/Groups features (the rest of the
+/// app then works purely on local storage).
 class FirebaseConfig {
-  static String apiKey = '';
-  static String projectId = '';
-  static String databaseUrl = '';
+  static const String apiKey = 'AIzaSyDHsnxCAgq4sl30NL59EG8woxiKMoge578';
+  static const String projectId = 'mtgcollection-1add3';
+  static const String databaseUrl =
+      'https://mtgcollection-1add3-default-rtdb.firebaseio.com';
 
   static bool get isConfigured => apiKey.isNotEmpty && databaseUrl.isNotEmpty;
-
-  /// Loads settings from `firebase_config.json`. Call once at startup before
-  /// reading [isConfigured]. Missing/invalid file simply leaves the cloud
-  /// features disabled.
-  static Future<void> load() async {
-    for (final path in await _candidatePaths()) {
-      final file = File(path);
-      if (await file.exists()) {
-        try {
-          final json =
-              jsonDecode(await file.readAsString()) as Map<String, dynamic>;
-          apiKey = json['apiKey'] as String? ?? '';
-          projectId = json['projectId'] as String? ?? '';
-          databaseUrl = json['databaseUrl'] as String? ?? '';
-          if (isConfigured) return;
-        } catch (_) {
-          // Ignore malformed files; try the next candidate.
-        }
-      }
-    }
-  }
-
-  static Future<List<String>> _candidatePaths() async {
-    const name = 'firebase_config.json';
-    final beside =
-        p.join(File(Platform.resolvedExecutable).parent.path, name);
-    String? appDir;
-    try {
-      appDir = p.join((await getApplicationSupportDirectory()).path, name);
-    } catch (_) {
-      appDir = null;
-    }
-    return [beside, if (appDir != null) appDir];
-  }
 }

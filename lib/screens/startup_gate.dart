@@ -77,7 +77,6 @@ class _StartupGateState extends State<StartupGate> {
     setState(() => _status = _Status.connecting);
     try {
       await DatabaseService.instance.init();
-      await FirebaseConfig.load(); // load cloud settings from the local file
       await widget.store.load();
       await widget.deckStore.load();
       // Restore a saved cloud session if the app is configured for Firebase.
