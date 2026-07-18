@@ -3,22 +3,35 @@ import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
+import '../services/auth_service.dart';
 import '../services/collection_store.dart';
 import '../services/csv_export_service.dart';
 import '../services/database_service.dart';
 import '../services/deck_store.dart';
+import '../services/firebase_config.dart';
+import '../services/group_service.dart';
+import 'auth_dialog.dart';
 import 'collection_tab.dart';
 import 'decks_tab.dart';
+import 'groups_screen.dart';
 import 'import_tab.dart';
 
 enum _ExportFormat { standard, moxfield }
 
 /// The main three-tab screen shown once the database connection is established.
 class HomePage extends StatelessWidget {
-  const HomePage({super.key, required this.store, required this.deckStore});
+  const HomePage({
+    super.key,
+    required this.store,
+    required this.deckStore,
+    required this.auth,
+    required this.groups,
+  });
 
   final CollectionStore store;
   final DeckStore deckStore;
+  final AuthService auth;
+  final GroupService groups;
 
   Future<void> _export(BuildContext context, _ExportFormat format) async {
     final messenger = ScaffoldMessenger.of(context);
@@ -98,6 +111,57 @@ class HomePage extends StatelessWidget {
     }
   }
 
+  void _openGroups(BuildContext context) {
+    if (!auth.isSignedIn) {
+      showAuthDialog(context, auth);
+      return;
+    }
+    Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => GroupsScreen(auth: auth, groups: groups, store: store),
+    ));
+  }
+
+  Widget _buildAccountAction(BuildContext context) {
+    return ListenableBuilder(
+      listenable: auth,
+      builder: (context, _) {
+        if (!auth.isSignedIn) {
+          // A single clear entry point: opens sign-in, which then leads to Groups.
+          return Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 4),
+            child: FilledButton.tonalIcon(
+              onPressed: () => showAuthDialog(context, auth),
+              icon: const Icon(Icons.groups),
+              label: const Text('Groups — Sign in'),
+            ),
+          );
+        }
+        return Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            FilledButton.tonalIcon(
+              onPressed: () => _openGroups(context),
+              icon: const Icon(Icons.groups),
+              label: const Text('Groups'),
+            ),
+            PopupMenuButton<String>(
+              tooltip: auth.currentUser!.email,
+              icon: const Icon(Icons.account_circle),
+              onSelected: (v) {
+                if (v == 'signout') auth.signOut();
+              },
+              itemBuilder: (_) => [
+                PopupMenuItem(
+                    enabled: false, child: Text(auth.currentUser!.email)),
+                const PopupMenuItem(value: 'signout', child: Text('Sign out')),
+              ],
+            ),
+          ],
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final db = DatabaseService.instance;
@@ -107,6 +171,7 @@ class HomePage extends StatelessWidget {
         appBar: AppBar(
           title: const Text('MTG Collection'),
           actions: [
+            if (FirebaseConfig.isConfigured) _buildAccountAction(context),
             IconButton(
               tooltip: 'Refresh prices from Scryfall',
               icon: const Icon(Icons.refresh),

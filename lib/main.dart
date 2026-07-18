@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
 
 import 'screens/startup_gate.dart';
+import 'services/auth_service.dart';
 import 'services/collection_store.dart';
 import 'services/database_service.dart';
 import 'services/deck_store.dart';
+import 'services/group_service.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -11,7 +13,14 @@ void main() {
   // as an in-app error screen with Retry rather than crashing at launch.
   final store = CollectionStore(DatabaseService.instance);
   final deckStore = DeckStore(DatabaseService.instance);
-  runApp(MtgCollectionApp(store: store, deckStore: deckStore));
+  final auth = AuthService();
+  final groups = GroupService(auth);
+  runApp(MtgCollectionApp(
+    store: store,
+    deckStore: deckStore,
+    auth: auth,
+    groups: groups,
+  ));
 }
 
 class MtgCollectionApp extends StatelessWidget {
@@ -19,10 +28,14 @@ class MtgCollectionApp extends StatelessWidget {
     super.key,
     required this.store,
     required this.deckStore,
+    required this.auth,
+    required this.groups,
   });
 
   final CollectionStore store;
   final DeckStore deckStore;
+  final AuthService auth;
+  final GroupService groups;
 
   @override
   Widget build(BuildContext context) {
@@ -36,7 +49,12 @@ class MtgCollectionApp extends StatelessWidget {
         ),
         useMaterial3: true,
       ),
-      home: StartupGate(store: store, deckStore: deckStore),
+      home: StartupGate(
+        store: store,
+        deckStore: deckStore,
+        auth: auth,
+        groups: groups,
+      ),
     );
   }
 }

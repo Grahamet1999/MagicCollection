@@ -76,6 +76,20 @@ void main() {
     expect(ranks.last, 7); // colorless last
   });
 
+  test('tags round-trip and filterable', () async {
+    final id = await db.addCard(const MtgCard(
+        name: 'Bolt', setCode: 'A', collectorNumber: '1', tags: ['Trade']));
+    expect((await db.getCards()).single.tags, ['Trade']);
+
+    await db.setCardTags(id, ['Want', 'Keep']);
+    final card = (await db.getCards()).single;
+    expect(card.tags, ['Want', 'Keep']);
+
+    // Editing quantity leaves tags intact (updateCard doesn't touch tags).
+    await db.updateCard(card.copyWith(quantity: 3));
+    expect((await db.getCards()).single.tags, ['Want', 'Keep']);
+  });
+
   test('primaryType buckets by priority', () {
     expect(primaryType('Legendary Creature — Elf Druid'), CardType.creature);
     expect(primaryType('Artifact Land'), CardType.land);

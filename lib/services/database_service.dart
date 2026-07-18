@@ -64,6 +64,8 @@ class DatabaseService {
       _b.setCardColorIdentity(id, identity);
   Future<void> setCardPrice(int id, double price) =>
       _b.setCardPrice(id, price);
+  Future<void> setCardTags(int id, List<String> tags) =>
+      _b.setCardTags(id, tags);
   Future<AddResult> addOrMergeCard(MtgCard card) => _b.addOrMergeCard(card);
   Future<void> moveQuantityToFolder(MtgCard card, int qty, int? destFolderId) =>
       _b.moveQuantityToFolder(card, qty, destFolderId);

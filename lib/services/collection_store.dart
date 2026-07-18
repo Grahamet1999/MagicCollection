@@ -25,6 +25,7 @@ class CollectionStore extends ChangeNotifier {
   int? _selectedFolderId;
   CardSort _sort = CardSort.name;
   bool _sortAscending = true;
+  Set<String> _selectedTags = {};
 
   List<Folder> get folders => _folders;
   List<MtgCard> get cards => _cards;
@@ -42,6 +43,7 @@ class CollectionStore extends ChangeNotifier {
   int? get selectedFolderId => _selectedFolderId;
   CardSort get sort => _sort;
   bool get sortAscending => _sortAscending;
+  Set<String> get selectedTags => _selectedTags;
   int get totalCards => _cards.fold(0, (sum, c) => sum + c.quantity);
 
   /// Total USD value of the current view (sum of price × quantity), summed over
@@ -52,14 +54,29 @@ class CollectionStore extends ChangeNotifier {
   Future<void> load() async {
     _folders = await _db.getFolders();
     _folderCounts = await _db.folderCardCounts();
-    _cards = await _db.getCards(
+    var cards = await _db.getCards(
       query: _query,
       folderId: _selectedFolderId,
       sort: _sort,
       ascending: _sortAscending,
     );
+    if (_selectedTags.isNotEmpty) {
+      cards = cards.where((c) => c.tags.any(_selectedTags.contains)).toList();
+    }
+    _cards = cards;
     _aggregated = isAggregated ? _aggregate(_cards) : const [];
     notifyListeners();
+  }
+
+  Future<void> setTagFilter(Set<String> tags) async {
+    _selectedTags = tags;
+    await load();
+  }
+
+  /// Sets the trade tags on a card (leaves the rest of the entry untouched).
+  Future<void> setTags(MtgCard card, List<String> tags) async {
+    await _db.setCardTags(card.id!, tags);
+    await load();
   }
 
   List<AggregatedCard> _aggregate(List<MtgCard> cards) {

@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'scryfall_parse.dart' as sf;
 
 /// A single Magic: The Gathering card stored in the local collection.
@@ -23,6 +25,9 @@ class MtgCard {
   /// for commander color-identity filtering. "" = colorless.
   final String colorIdentity;
 
+  /// Free-form trade tags, e.g. ["Trade", "Want", "Keep"].
+  final List<String> tags;
+
   const MtgCard({
     this.id,
     required this.name,
@@ -35,6 +40,7 @@ class MtgCard {
     this.folderId,
     this.colors = '',
     this.colorIdentity = '',
+    this.tags = const [],
   });
 
   MtgCard copyWith({
@@ -48,6 +54,7 @@ class MtgCard {
     double? priceUsd,
     String? colors,
     String? colorIdentity,
+    List<String>? tags,
     // Use a sentinel so callers can explicitly clear the folder (set to null).
     Object? folderId = _noChange,
   }) {
@@ -62,8 +69,28 @@ class MtgCard {
       priceUsd: priceUsd ?? this.priceUsd,
       colors: colors ?? this.colors,
       colorIdentity: colorIdentity ?? this.colorIdentity,
+      tags: tags ?? this.tags,
       folderId: folderId == _noChange ? this.folderId : folderId as int?,
     );
+  }
+
+  /// Encodes [tags] to a JSON string for storage; decodes with [decodeTags].
+  static String encodeTags(List<String> tags) => jsonEncode(tags);
+
+  static List<String> decodeTags(Object? raw) {
+    if (raw == null) return const [];
+    final s = raw.toString();
+    if (s.isEmpty) return const [];
+    try {
+      final decoded = jsonDecode(s);
+      if (decoded is List) {
+        return decoded.map((e) => e.toString()).toList();
+      }
+    } catch (_) {
+      // Fall back to treating a bare string as a single tag.
+      return [s];
+    }
+    return const [];
   }
 
   /// Sort rank for color: W, U, B, R, G, then multicolor, then colorless.
@@ -99,6 +126,7 @@ class MtgCard {
       'folder_id': folderId,
       'colors': colors,
       'color_identity': colorIdentity,
+      'tags': encodeTags(tags),
     };
   }
 
@@ -115,6 +143,7 @@ class MtgCard {
       folderId: map['folder_id'] as int?,
       colors: map['colors'] as String? ?? '',
       colorIdentity: map['color_identity'] as String? ?? '',
+      tags: decodeTags(map['tags']),
     );
   }
 

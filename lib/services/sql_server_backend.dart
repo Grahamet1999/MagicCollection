@@ -64,6 +64,10 @@ class SqlServerBackend implements CardBackend {
       "IF COL_LENGTH('dbo.cards', 'color_identity') IS NULL "
       'ALTER TABLE dbo.cards ADD color_identity NVARCHAR(10) NULL',
     );
+    await odbc.execute(
+      "IF COL_LENGTH('dbo.cards', 'tags') IS NULL "
+      'ALTER TABLE dbo.cards ADD tags NVARCHAR(1000) NULL',
+    );
   }
 
   Future<void> _createSchema(DartOdbc odbc) async {
@@ -88,6 +92,7 @@ class SqlServerBackend implements CardBackend {
         folder_id        INT NULL,
         colors           NVARCHAR(10) NULL,
         color_identity   NVARCHAR(10) NULL,
+        tags             NVARCHAR(1000) NULL,
         CONSTRAINT FK_cards_folder FOREIGN KEY (folder_id)
           REFERENCES dbo.folders (id) ON DELETE SET NULL
       )
@@ -129,12 +134,12 @@ class SqlServerBackend implements CardBackend {
   Future<int> addCard(MtgCard card) async {
     final rows = await _db.execute(
       'INSERT INTO dbo.cards '
-      '(name, set_code, collector_number, foil, quantity, image_url, price_usd, folder_id, colors, color_identity) '
+      '(name, set_code, collector_number, foil, quantity, image_url, price_usd, folder_id, colors, color_identity, tags) '
       'OUTPUT INSERTED.id AS id VALUES ('
       '${_lit(card.name)}, ${_lit(card.setCode)}, ${_lit(card.collectorNumber)}, '
       '${_lit(card.foil)}, ${_lit(card.quantity)}, ${_lit(card.imageUrl)}, '
       '${_lit(card.priceUsd)}, ${_lit(card.folderId)}, ${_lit(card.colors)}, '
-      '${_lit(card.colorIdentity)})',
+      '${_lit(card.colorIdentity)}, ${_lit(MtgCard.encodeTags(card.tags))})',
     );
     return _asInt(rows.isNotEmpty ? rows.first['id'] : null) ?? -1;
   }
@@ -143,6 +148,14 @@ class SqlServerBackend implements CardBackend {
   Future<void> setCardColors(int id, String colors) async {
     await _db.execute(
       'UPDATE dbo.cards SET colors = ${_lit(colors)} WHERE id = ${_lit(id)}',
+    );
+  }
+
+  @override
+  Future<void> setCardTags(int id, List<String> tags) async {
+    await _db.execute(
+      'UPDATE dbo.cards SET tags = ${_lit(MtgCard.encodeTags(tags))} '
+      'WHERE id = ${_lit(id)}',
     );
   }
 
@@ -266,7 +279,7 @@ class SqlServerBackend implements CardBackend {
     final rows = await _db.execute(
       'SELECT id, name, set_code, collector_number, '
       'CAST(foil AS INT) AS foil, quantity, '
-      'image_url, price_usd, folder_id, colors, color_identity '
+      'image_url, price_usd, folder_id, colors, color_identity, tags '
       'FROM dbo.cards $clause ORDER BY ${_orderBy(sort, ascending)}',
     );
     return rows.map(_cardFromRow).toList();
@@ -527,6 +540,7 @@ class SqlServerBackend implements CardBackend {
       folderId: _asInt(r['folder_id']),
       colors: r['colors'] as String? ?? '',
       colorIdentity: r['color_identity'] as String? ?? '',
+      tags: MtgCard.decodeTags(r['tags']),
     );
   }
 

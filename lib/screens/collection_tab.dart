@@ -9,6 +9,7 @@ import '../services/database_service.dart';
 import '../services/deck_store.dart';
 import '../services/scryfall_service.dart';
 import '../widgets/card_image.dart';
+import '../widgets/tags.dart';
 
 /// Collection tab: browse all stored cards with a folder sidebar and a
 /// search/filter bar. Cards always live in the overall collection and may be
@@ -176,6 +177,8 @@ class _CollectionTabState extends State<CollectionTab> {
               ),
               const SizedBox(width: 12),
               _buildSortControl(context, store),
+              const SizedBox(width: 8),
+              _buildTagFilter(context, store),
               const SizedBox(width: 16),
               Text(
                 _countLabel(store),
@@ -328,6 +331,53 @@ class _CollectionTabState extends State<CollectionTab> {
           onPressed: () => store.setSort(store.sort, !store.sortAscending),
         ),
       ],
+    );
+  }
+
+  Widget _buildTagFilter(BuildContext context, CollectionStore store) {
+    // Offer the presets plus any custom tags currently in view.
+    final tags = <String>{
+      ...kTradeTags,
+      for (final c in store.cards) ...c.tags,
+    }.toList();
+    final active = store.selectedTags;
+    return PopupMenuButton<String>(
+      tooltip: 'Filter by tag',
+      onSelected: (tag) {
+        if (tag.isEmpty) {
+          store.setTagFilter({});
+          return;
+        }
+        final next = {...active};
+        if (!next.remove(tag)) next.add(tag);
+        store.setTagFilter(next);
+      },
+      itemBuilder: (_) => [
+        for (final t in tags)
+          CheckedPopupMenuItem(
+            value: t,
+            checked: active.contains(t),
+            child: Text(t),
+          ),
+        if (active.isNotEmpty)
+          const PopupMenuItem(value: '', child: Text('Clear filter')),
+      ],
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.sell_outlined,
+                size: 18,
+                color: active.isEmpty
+                    ? null
+                    : Theme.of(context).colorScheme.primary),
+            const SizedBox(width: 6),
+            Text(active.isEmpty ? 'Tags' : 'Tags (${active.length})'),
+            const Icon(Icons.arrow_drop_down, size: 20),
+          ],
+        ),
+      ),
     );
   }
 
@@ -583,6 +633,19 @@ class _CardTile extends StatelessWidget {
                       shadows: const [Shadow(blurRadius: 4)],
                     ),
                   ),
+                if (card.tags.isNotEmpty)
+                  Positioned(
+                    bottom: 6,
+                    left: 6,
+                    right: 6,
+                    child: Wrap(
+                      spacing: 4,
+                      runSpacing: 4,
+                      children: [
+                        for (final tag in card.tags) _tagBadge(context, tag),
+                      ],
+                    ),
+                  ),
               ],
             ),
           ),
@@ -615,6 +678,8 @@ class _CardTile extends StatelessWidget {
                     icon: const Icon(Icons.more_vert, size: 18),
                     onSelected: (v) => _onAction(context, v),
                     itemBuilder: (_) => [
+                      const PopupMenuItem(
+                          value: 'tags', child: Text('Edit tags…')),
                       const PopupMenuItem(
                           value: 'add_to_deck', child: Text('Add to deck…')),
                       const PopupMenuItem(
@@ -665,8 +730,25 @@ class _CardTile extends StatelessWidget {
     );
   }
 
+  Widget _tagBadge(BuildContext context, String tag) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+      decoration: BoxDecoration(
+        color: tagColor(tag),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Text(
+        tag,
+        style: const TextStyle(
+            color: Colors.black87, fontSize: 10, fontWeight: FontWeight.w600),
+      ),
+    );
+  }
+
   void _onAction(BuildContext context, String action) {
     switch (action) {
+      case 'tags':
+        _editTags(context);
       case 'add_to_deck':
         _addToDeck(context);
       case 'move':
@@ -678,6 +760,11 @@ class _CardTile extends StatelessWidget {
       case 'delete':
         store.deleteCard(card.id!);
     }
+  }
+
+  Future<void> _editTags(BuildContext context) async {
+    final result = await showTagEditor(context, card.tags);
+    if (result != null) await store.setTags(card, result);
   }
 
   Future<void> _addToDeck(BuildContext context) async {

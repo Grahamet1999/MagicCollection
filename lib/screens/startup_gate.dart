@@ -1,9 +1,13 @@
 import 'package:flutter/material.dart';
 
+import '../services/auth_service.dart';
 import '../services/collection_store.dart';
 import '../services/database_service.dart';
 import '../services/db_config.dart';
 import '../services/deck_store.dart';
+import '../services/firebase_config.dart';
+import '../services/group_service.dart';
+import 'auth_dialog.dart';
 import 'home_page.dart';
 
 /// Gates the app on a successful database connection.
@@ -12,10 +16,18 @@ import 'home_page.dart';
 /// readable error screen with the underlying message and a Retry button, so the
 /// user can fix their server/connection and try again without relaunching.
 class StartupGate extends StatefulWidget {
-  const StartupGate({super.key, required this.store, required this.deckStore});
+  const StartupGate({
+    super.key,
+    required this.store,
+    required this.deckStore,
+    required this.auth,
+    required this.groups,
+  });
 
   final CollectionStore store;
   final DeckStore deckStore;
+  final AuthService auth;
+  final GroupService groups;
 
   @override
   State<StartupGate> createState() => _StartupGateState();
@@ -26,6 +38,34 @@ enum _Status { connecting, ready, error }
 class _StartupGateState extends State<StartupGate> {
   _Status _status = _Status.connecting;
   String _error = '';
+  bool _promptedLogin = false;
+
+  /// Offers a one-time sign-in prompt on launch when the cloud is configured but
+  /// no session is active. Skippable — the app is fully usable locally.
+  Future<void> _promptLogin() async {
+    final go = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Sign in to shared groups?'),
+        content: const Text(
+          'Sign in to create or join a group and share your collection with '
+          'friends for trading. You can always do this later from the Groups '
+          'button in the top bar.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Not now'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Sign in'),
+          ),
+        ],
+      ),
+    );
+    if (go == true && mounted) showAuthDialog(context, widget.auth);
+  }
 
   @override
   void initState() {
@@ -39,6 +79,10 @@ class _StartupGateState extends State<StartupGate> {
       await DatabaseService.instance.init();
       await widget.store.load();
       await widget.deckStore.load();
+      // Restore a saved cloud session if the app is configured for Firebase.
+      if (FirebaseConfig.isConfigured) {
+        await widget.auth.restore();
+      }
       if (mounted) setState(() => _status = _Status.ready);
     } catch (e) {
       if (mounted) {
@@ -54,7 +98,19 @@ class _StartupGateState extends State<StartupGate> {
   Widget build(BuildContext context) {
     switch (_status) {
       case _Status.ready:
-        return HomePage(store: widget.store, deckStore: widget.deckStore);
+        if (FirebaseConfig.isConfigured &&
+            !widget.auth.isSignedIn &&
+            !_promptedLogin) {
+          _promptedLogin = true;
+          WidgetsBinding.instance
+              .addPostFrameCallback((_) => _promptLogin());
+        }
+        return HomePage(
+          store: widget.store,
+          deckStore: widget.deckStore,
+          auth: widget.auth,
+          groups: widget.groups,
+        );
       case _Status.connecting:
         return const Scaffold(
           body: Center(

@@ -13,6 +13,7 @@ abstract class CardBackend {
   Future<void> setCardColors(int id, String colors);
   Future<void> setCardColorIdentity(int id, String identity);
   Future<void> setCardPrice(int id, double price);
+  Future<void> setCardTags(int id, List<String> tags);
   Future<AddResult> addOrMergeCard(MtgCard card);
   Future<void> moveQuantityToFolder(MtgCard card, int qty, int? destFolderId);
   Future<List<MtgCard>> getCards({

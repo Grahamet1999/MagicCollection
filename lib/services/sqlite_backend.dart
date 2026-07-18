@@ -34,7 +34,7 @@ class SqliteBackend implements CardBackend {
     _db = await databaseFactoryFfi.openDatabase(
       dbPath,
       options: OpenDatabaseOptions(
-        version: 2,
+        version: 3,
         onConfigure: (db) => db.execute('PRAGMA foreign_keys = ON'),
         onCreate: (db, version) async {
           await db.execute('''
@@ -56,6 +56,7 @@ class SqliteBackend implements CardBackend {
               folder_id        INTEGER,
               colors           TEXT,
               color_identity   TEXT,
+              tags             TEXT,
               FOREIGN KEY (folder_id) REFERENCES folders (id) ON DELETE SET NULL
             )
           ''');
@@ -65,6 +66,9 @@ class SqliteBackend implements CardBackend {
           if (oldVersion < 2) {
             await db.execute('ALTER TABLE cards ADD COLUMN color_identity TEXT');
             await _createDeckTables(db);
+          }
+          if (oldVersion < 3) {
+            await db.execute('ALTER TABLE cards ADD COLUMN tags TEXT');
           }
         },
       ),
@@ -117,6 +121,7 @@ class SqliteBackend implements CardBackend {
         'folder_id': c.folderId,
         'colors': c.colors,
         'color_identity': c.colorIdentity,
+        'tags': MtgCard.encodeTags(c.tags),
       };
 
   // ---- Cards ---------------------------------------------------------------
@@ -134,6 +139,12 @@ class SqliteBackend implements CardBackend {
   @override
   Future<void> setCardColorIdentity(int id, String identity) async {
     await _database.update('cards', {'color_identity': identity},
+        where: 'id = ?', whereArgs: [id]);
+  }
+
+  @override
+  Future<void> setCardTags(int id, List<String> tags) async {
+    await _database.update('cards', {'tags': MtgCard.encodeTags(tags)},
         where: 'id = ?', whereArgs: [id]);
   }
 
@@ -485,6 +496,7 @@ class SqliteBackend implements CardBackend {
       folderId: r['folder_id'] as int?,
       colors: r['colors'] as String? ?? '',
       colorIdentity: r['color_identity'] as String? ?? '',
+      tags: MtgCard.decodeTags(r['tags']),
     );
   }
 }

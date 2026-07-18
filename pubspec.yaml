@@ -49,6 +49,8 @@ dependencies:
   csv: ^6.0.0
   # Native file-open dialog for choosing the CSV (Windows desktop)
   file_picker: ^11.0.2
+  # Persists the signed-in session and cloud settings between launches
+  shared_preferences: ^2.5.5
 
 dev_dependencies:
   flutter_test:
