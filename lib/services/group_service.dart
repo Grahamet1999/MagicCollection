@@ -113,30 +113,34 @@ class GroupService {
     return groups;
   }
 
+  Future<void> _tryDelete(String path) async {
+    try {
+      await _delete(path);
+    } catch (_) {
+      // Best-effort: a denied/failed sub-step must not block the rest.
+    }
+  }
+
   Future<void> leaveGroup(String gid) async {
     final uid = _auth.currentUser!.uid;
-    await _delete('groupCards/$gid/$uid');
-    await _delete('groups/$gid/members/$uid');
+    await _tryDelete('groupCards/$gid/$uid');
+    await _tryDelete('groups/$gid/members/$uid');
+    // The essential step — removes the group from *your* list. Always permitted.
     await _delete('users/$uid/groups/$gid');
   }
 
-  /// Deletes a group entirely (owner only). Removes the group record, its invite
-  /// code, and the owner's data. Other members' orphaned pointers are harmless
-  /// (they're skipped when listing groups).
+  /// Deletes a group (owner). Best-effort removes the group record, invite, and
+  /// pooled cards for everyone; the final step reliably removes it from the
+  /// owner's own list. Orphaned pointers for other members are harmless (they're
+  /// skipped when listing groups).
   Future<void> deleteGroup(Group group) async {
     final uid = _auth.currentUser!.uid;
-    // Own cards first (always permitted while a member).
-    try {
-      await _delete('groupCards/${group.id}/$uid');
-    } catch (_) {}
-    // Whole pooled-cards node — works if rules grant the owner group-wide write;
-    // best-effort otherwise.
-    try {
-      await _delete('groupCards/${group.id}');
-    } catch (_) {}
-    await _delete('invites/${group.inviteCode}');
+    await _tryDelete('groupCards/${group.id}');
+    await _tryDelete('groupCards/${group.id}/$uid');
+    await _tryDelete('invites/${group.inviteCode}');
+    await _tryDelete('groups/${group.id}');
+    // The essential step — always permitted, so the group leaves your view.
     await _delete('users/$uid/groups/${group.id}');
-    await _delete('groups/${group.id}'); // owner-only per rules; makes it vanish
   }
 
   Future<Group?> _fetchGroup(String gid) async {
