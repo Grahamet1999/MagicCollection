@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math';
 
 import 'package:http/http.dart' as http;
@@ -411,4 +412,15 @@ class GroupException implements Exception {
   final String message;
   @override
   String toString() => message;
+}
+
+/// TEMP DIAGNOSTIC: appends a timestamped line to
+/// `%TEMP%/mtg_delete_diag.log`. Remove once the delete issue is resolved.
+void groupDiag(String message) {
+  try {
+    File('${Directory.systemTemp.path}/mtg_delete_diag.log').writeAsStringSync(
+      '${DateTime.now().toIso8601String()}  $message\n',
+      mode: FileMode.append,
+    );
+  } catch (_) {}
 }

@@ -138,7 +138,10 @@ class _GroupsScreenState extends State<GroupsScreen> {
           'collection is unaffected.',
     );
     if (!ok) return;
-    await _sub?.cancel();
+    // Fire-and-forget: awaiting cancel() on the open SSE stream can hang
+    // forever, which would block the leave entirely.
+    _sub?.cancel();
+    _sub = null;
     await _guard(() => widget.groups.leaveGroup(group));
     setState(() => _selected = null);
     await _loadGroups();
@@ -147,16 +150,31 @@ class _GroupsScreenState extends State<GroupsScreen> {
   /// Deletes [group] entirely (owner-only) after confirmation, then refreshes
   /// the list. See [GroupService.deleteGroup] for the resilient delete flow.
   Future<void> _deleteGroup(Group group) async {
+    groupDiag('UI _deleteGroup tapped for "${group.name}" (${group.id})');
     final ok = await _confirm(
       'Delete "${group.name}"?',
       'This deletes the group for everyone and removes all pooled cards. It '
           'cannot be undone. (Your local collection is unaffected.)',
     );
+    groupDiag('UI _confirm returned ok=$ok');
     if (!ok) return;
-    await _sub?.cancel();
-    await _guard(() => widget.groups.deleteGroup(group));
+    // Fire-and-forget: awaiting cancel() on the open SSE stream can hang
+    // forever, which would block the delete entirely.
+    _sub?.cancel();
+    _sub = null;
+    try {
+      await widget.groups.deleteGroup(group);
+      groupDiag('UI deleteGroup service returned OK');
+    } catch (e) {
+      groupDiag('UI deleteGroup service threw: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(e.toString())));
+      }
+    }
     setState(() => _selected = null);
     await _loadGroups();
+    groupDiag('UI reload done, myGroups=${_myGroups.length}');
   }
 
   /// Shows a generic yes/no confirmation dialog with a destructive-colored
