@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math';
 
 import 'package:http/http.dart' as http;
@@ -34,6 +35,26 @@ class GroupService {
     final res = await _client.get(_uri(path, token));
     _check(res);
     return jsonDecode(res.body);
+  }
+
+  /// Like [_get] but returns the HTTP status alongside the decoded body and
+  /// never throws — used where the caller must tell "the resource is gone or
+  /// forbidden" (which it should act on) apart from "a transient error" (which
+  /// it should ignore). A network/auth failure is reported as status `0`.
+  Future<({int status, dynamic body})> _getRaw(String path) async {
+    try {
+      final token = await _auth.idToken();
+      final res = await _client.get(_uri(path, token));
+      dynamic body;
+      try {
+        body = jsonDecode(res.body);
+      } catch (_) {
+        body = null; // non-JSON error body
+      }
+      return (status: res.statusCode, body: body);
+    } catch (_) {
+      return (status: 0, body: null);
+    }
   }
 
   Future<void> _put(String path, dynamic data) async {
@@ -101,18 +122,53 @@ class GroupService {
     return (await _fetchGroup(gid))!;
   }
 
+  /// Lists the groups the signed-in user belongs to, self-healing stale state.
+  ///
+  /// `users/{uid}/groups` is only a list of pointers; the source of truth for
+  /// membership is each `groups/{gid}` record. A pointer can outlive what it
+  /// points to — the owner deleted the group, or you were removed — and the
+  /// security rules deny reading a group you're no longer a member of, so those
+  /// reads come back forbidden or absent. When that happens we prune the
+  /// dangling pointer here so the group stops reappearing. Transient failures
+  /// (no network, 5xx) are left untouched so a blip never drops a valid group.
   Future<List<Group>> myGroups() async {
     final uid = _auth.currentUser!.uid;
-    final map = await _get('users/$uid/groups');
-    if (map is! Map) return [];
+    final pointers = await _get('users/$uid/groups');
+    if (pointers is! Map) return [];
+
     final groups = <Group>[];
-    for (final gid in map.keys) {
-      final g = await _fetchGroup(gid as String);
-      if (g != null) groups.add(g);
+    for (final gid in pointers.keys.cast<String>()) {
+      final res = await _getRaw('groups/$gid');
+
+      // A readable group record means we're a member (reads require it), so the
+      // pointer is valid — keep it.
+      if (res.status == 200 && res.body is Map) {
+        groups.add(
+          Group.fromRtdb(gid, Map<String, dynamic>.from(res.body as Map)),
+        );
+        continue;
+      }
+
+      // Definitively gone or forbidden → the pointer is stale, so remove it.
+      // 200-with-null = the group was deleted; 401/403 = we're no longer a
+      // member; 404 = it never existed. Anything else (0/5xx) is transient and
+      // deliberately left in place to retry on the next load.
+      if (_pointerIsStale(res.status)) {
+        await _tryDelete('users/$uid/groups/$gid');
+      }
     }
     return groups;
   }
 
+  /// Whether a failed `groups/{gid}` read means the pointer to it should be
+  /// pruned: the group is gone (200-with-null / 404) or reading it is forbidden
+  /// because we're no longer a member (401/403). Transient statuses are not.
+  static bool _pointerIsStale(int status) =>
+      status == 200 || status == 401 || status == 403 || status == 404;
+
+  /// Deletes [path], swallowing any error. For cleanup steps that must not block
+  /// the essential removal that follows them — a denied or already-gone node is
+  /// fine either way. (RTDB returns 200 for deleting a path that doesn't exist.)
   Future<void> _tryDelete(String path) async {
     try {
       await _delete(path);
@@ -121,26 +177,49 @@ class GroupService {
     }
   }
 
-  Future<void> leaveGroup(String gid) async {
+  /// Removes the signed-in user from [group] (a member leaving on their own).
+  ///
+  /// Not for owners: an owner leaving would orphan the group (no one could then
+  /// delete it), so this throws and directs them to [deleteGroup] instead.
+  ///
+  /// The steps run in the only order the rules allow — your pooled cards can be
+  /// deleted only *while* you're still a member, so they go first; then your
+  /// membership; then your personal pointer. The pointer delete is the
+  /// essential, always-permitted step that removes the group from your list, so
+  /// it runs last and is the only one allowed to surface an error. Even if it
+  /// somehow failed, [myGroups] would prune the now-unreadable group next load.
+  Future<void> leaveGroup(Group group) async {
     final uid = _auth.currentUser!.uid;
-    await _tryDelete('groupCards/$gid/$uid');
-    await _tryDelete('groups/$gid/members/$uid');
-    // The essential step — removes the group from *your* list. Always permitted.
-    await _delete('users/$uid/groups/$gid');
+    if (group.ownerUid == uid) {
+      throw GroupException('You own this group — delete it instead of leaving.');
+    }
+    await _tryDelete('groupCards/${group.id}/$uid');     // 1. your pooled cards
+    await _tryDelete('groups/${group.id}/members/$uid'); // 2. your membership
+    await _delete('users/$uid/groups/${group.id}');      // 3. your pointer
   }
 
-  /// Deletes a group (owner). Best-effort removes the group record, invite, and
-  /// pooled cards for everyone; the final step reliably removes it from the
-  /// owner's own list. Orphaned pointers for other members are harmless (they're
-  /// skipped when listing groups).
+  /// Deletes a group the signed-in user owns.
+  ///
+  /// Removes everything the owner is permitted to touch — every member's pooled
+  /// cards, the invite code, and the group record — then the owner's own
+  /// pointer (the essential, always-permitted step). Order matters: the pooled
+  /// cards must be deleted *before* the group record, because the rule that
+  /// authorizes deleting `groupCards/{gid}` reads the group's `ownerUid`, which
+  /// is gone once the group record is deleted.
+  ///
+  /// The owner can't delete other members' personal pointers (the rules only
+  /// let each user write under their own uid). Those self-heal: the next time
+  /// each member loads, [myGroups] finds the group unreadable and prunes the
+  /// pointer. Throws for a non-owner (their delete would be denied anyway).
   Future<void> deleteGroup(Group group) async {
     final uid = _auth.currentUser!.uid;
-    await _tryDelete('groupCards/${group.id}');
-    await _tryDelete('groupCards/${group.id}/$uid');
-    await _tryDelete('invites/${group.inviteCode}');
-    await _tryDelete('groups/${group.id}');
-    // The essential step — always permitted, so the group leaves your view.
-    await _delete('users/$uid/groups/${group.id}');
+    if (group.ownerUid != uid) {
+      throw GroupException('Only the group owner can delete it.');
+    }
+    await _tryDelete('groupCards/${group.id}');      // 1. everyone's pooled cards
+    await _tryDelete('invites/${group.inviteCode}'); // 2. the invite code
+    await _tryDelete('groups/${group.id}');          // 3. the group record
+    await _delete('users/$uid/groups/${group.id}');  // 4. owner's pointer
   }
 
   Future<Group?> _fetchGroup(String gid) async {
@@ -195,6 +274,9 @@ class GroupService {
     final names = {for (final m in group.members) m.uid: m.displayName};
     final acc = GroupBinderAccumulator();
 
+    // Parse the text/event-stream: accumulate `event:` and `data:` lines until
+    // a blank line ends the event, then fold it into the accumulator and emit
+    // the refreshed pooled list.
     var event = '';
     final data = StringBuffer();
     await for (final line in resp.stream
@@ -216,12 +298,15 @@ class GroupService {
     }
   }
 
+  /// Generates a random 6-character invite code. The alphabet omits easily
+  /// confused characters (0/O, 1/I) so codes are easy to read out loud.
   static String _generateInviteCode() {
     const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
     final rng = Random.secure();
     return List.generate(6, (_) => chars[rng.nextInt(chars.length)]).join();
   }
 
+  /// Closes the underlying HTTP client.
   void dispose() => _client.close();
 }
 
@@ -230,6 +315,13 @@ class GroupService {
 class GroupBinderAccumulator {
   final Map<String, Map<String, dynamic>> _tree = {};
 
+  /// Folds one RTDB SSE event into [_tree].
+  ///
+  /// [event] is `put` (replace the subtree at the path) or `patch` (merge
+  /// children). [payload] carries a `path` relative to `groupCards/{gid}` and
+  /// the new `data`. The path depth selects the scope: root replaces everyone,
+  /// one segment a member's whole card set, two a single card. A null `data`
+  /// means the node was deleted.
   void apply(String event, Map<String, dynamic> payload) {
     final path = (payload['path'] as String?) ?? '/';
     final data = payload['data'];
@@ -288,9 +380,13 @@ class GroupBinderAccumulator {
     }
   }
 
+  /// Coerces an untyped SSE value into a `cardKey -> json` map (empty if it
+  /// isn't a map).
   Map<String, dynamic> _asCardMap(dynamic data) =>
       data is Map ? Map<String, dynamic>.from(data) : {};
 
+  /// Flattens the current tree into a [GroupCard] list, attaching each owner's
+  /// display name from [namesByUid].
   List<GroupCard> cards(Map<String, String> namesByUid) {
     final list = <GroupCard>[];
     _tree.forEach((uid, cards) {
@@ -310,9 +406,21 @@ class GroupBinderAccumulator {
   }
 }
 
+/// A user-facing error from a cloud group operation.
 class GroupException implements Exception {
   GroupException(this.message);
   final String message;
   @override
   String toString() => message;
+}
+
+/// TEMP DIAGNOSTIC: appends a timestamped line to
+/// `%TEMP%/mtg_delete_diag.log`. Remove once the delete issue is resolved.
+void groupDiag(String message) {
+  try {
+    File('${Directory.systemTemp.path}/mtg_delete_diag.log').writeAsStringSync(
+      '${DateTime.now().toIso8601String()}  $message\n',
+      mode: FileMode.append,
+    );
+  } catch (_) {}
 }

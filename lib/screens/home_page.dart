@@ -16,6 +16,7 @@ import 'decks_tab.dart';
 import 'groups_screen.dart';
 import 'import_tab.dart';
 
+/// CSV export flavors offered in the download menu.
 enum _ExportFormat { standard, moxfield }
 
 /// The main three-tab screen shown once the database connection is established.
@@ -28,11 +29,15 @@ class HomePage extends StatelessWidget {
     required this.groups,
   });
 
+  // Shared services used across the tabs and top-bar actions.
   final CollectionStore store;
   final DeckStore deckStore;
   final AuthService auth;
   final GroupService groups;
 
+  /// Builds the CSV for [format], prompts for a save location, and writes it,
+  /// reporting success/failure via a SnackBar. No-op if the collection is empty
+  /// or the save dialog is cancelled.
   Future<void> _export(BuildContext context, _ExportFormat format) async {
     final messenger = ScaffoldMessenger.of(context);
     final db = DatabaseService.instance;
@@ -73,6 +78,8 @@ class HomePage extends StatelessWidget {
     }
   }
 
+  /// Shows a blocking progress dialog while [CollectionStore.refreshPrices]
+  /// re-fetches prices from Scryfall, then reports how many changed.
   Future<void> _refreshPrices(BuildContext context) async {
     final navigator = Navigator.of(context);
     final messenger = ScaffoldMessenger.of(context);
@@ -111,6 +118,7 @@ class HomePage extends StatelessWidget {
     }
   }
 
+  /// Opens the Groups screen, or the sign-in dialog first if not signed in.
   void _openGroups(BuildContext context) {
     if (!auth.isSignedIn) {
       showAuthDialog(context, auth);
@@ -121,6 +129,9 @@ class HomePage extends StatelessWidget {
     ));
   }
 
+  /// Builds the top-bar account control, rebuilding on auth changes: a single
+  /// "Groups — Sign in" button when signed out, or a Groups button plus an
+  /// account menu (email + Sign out) when signed in.
   Widget _buildAccountAction(BuildContext context) {
     return ListenableBuilder(
       listenable: auth,

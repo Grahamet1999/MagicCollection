@@ -7,6 +7,8 @@ import 'services/database_service.dart';
 import 'services/deck_store.dart';
 import 'services/group_service.dart';
 
+/// App entry point. Constructs the shared, long-lived services and hands them to
+/// the widget tree; actual database connection happens later in [StartupGate].
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   // The database connection is established by StartupGate so failures surface
@@ -23,6 +25,8 @@ void main() {
   ));
 }
 
+/// Root widget: sets up the dark Material 3 theme and hands the shared services
+/// to [StartupGate], which initializes the database before showing the UI.
 class MtgCollectionApp extends StatelessWidget {
   const MtgCollectionApp({
     super.key,
@@ -32,9 +36,16 @@ class MtgCollectionApp extends StatelessWidget {
     required this.groups,
   });
 
+  /// Collection/folders state shared by the Collection and Import tabs.
   final CollectionStore store;
+
+  /// Deck-building state for the Decks tab.
   final DeckStore deckStore;
+
+  /// Firebase authentication (drives the sign-in button and Groups access).
   final AuthService auth;
+
+  /// Cloud group binder service, gated behind [auth].
   final GroupService groups;
 
   @override

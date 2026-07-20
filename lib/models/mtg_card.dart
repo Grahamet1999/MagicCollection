@@ -8,14 +8,32 @@ import 'scryfall_parse.dart' as sf;
 /// exactly one [folder] via [folderId]; a null [folderId] means "no folder"
 /// (still in the collection, just unfiled).
 class MtgCard {
+  /// SQLite primary key. Null until the row has been inserted.
   final int? id;
+
+  /// Card name.
   final String name;
+
+  /// Set code, e.g. "NEO".
   final String setCode;
+
+  /// Collector number within the set.
   final String collectorNumber;
+
+  /// Whether this is the foil printing.
   final bool foil;
+
+  /// Number of copies owned.
   final int quantity;
+
+  /// Scryfall image URL, if known.
   final String? imageUrl;
+
+  /// Latest USD price snapshot, if known.
   final double? priceUsd;
+
+  /// The folder this card is filed under, or null for "no folder" (see the
+  /// class doc). Cleared via [copyWith] using the [_noChange] sentinel.
   final int? folderId;
 
   /// Card colors in WUBRG order, e.g. "W", "WU", or "" for colorless.
@@ -113,6 +131,8 @@ class MtgCard {
     }
   }
 
+  /// Serializes to a row map for the `cards` table. [foil] is stored as 0/1 and
+  /// [tags] as a JSON string (see [encodeTags]) to fit relational columns.
   Map<String, Object?> toMap() {
     return {
       'id': id,
@@ -130,6 +150,7 @@ class MtgCard {
     };
   }
 
+  /// Rebuilds an [MtgCard] from a `cards` table row.
   factory MtgCard.fromMap(Map<String, Object?> map) {
     return MtgCard(
       id: map['id'] as int?,

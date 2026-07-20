@@ -24,6 +24,7 @@ class StartupGate extends StatefulWidget {
     required this.groups,
   });
 
+  // The shared services, threaded through to [HomePage] once ready.
   final CollectionStore store;
   final DeckStore deckStore;
   final AuthService auth;
@@ -33,11 +34,16 @@ class StartupGate extends StatefulWidget {
   State<StartupGate> createState() => _StartupGateState();
 }
 
+/// Connection lifecycle: connecting → ready, or → error (with Retry).
 enum _Status { connecting, ready, error }
 
 class _StartupGateState extends State<StartupGate> {
   _Status _status = _Status.connecting;
+
+  /// Underlying error message shown on the error screen.
   String _error = '';
+
+  /// Ensures the one-time launch sign-in prompt only appears once.
   bool _promptedLogin = false;
 
   /// Offers a one-time sign-in prompt on launch when the cloud is configured but
@@ -73,6 +79,9 @@ class _StartupGateState extends State<StartupGate> {
     _connect();
   }
 
+  /// Initializes the database, loads the stores, and restores any cloud
+  /// session. On success moves to [_Status.ready]; on failure captures the
+  /// error and moves to [_Status.error] so the user can Retry. Re-run by Retry.
   Future<void> _connect() async {
     setState(() => _status = _Status.connecting);
     try {
@@ -130,10 +139,15 @@ class _StartupGateState extends State<StartupGate> {
   }
 }
 
+/// Full-screen connection-failure view: shows the raw error, the configured
+/// connection details, a troubleshooting checklist, and a Retry button.
 class _ErrorScreen extends StatelessWidget {
   const _ErrorScreen({required this.message, required this.onRetry});
 
+  /// The underlying error text (shown verbatim, selectable).
   final String message;
+
+  /// Called when the user taps Retry.
   final VoidCallback onRetry;
 
   @override

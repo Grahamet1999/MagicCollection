@@ -10,6 +10,7 @@ Future<void> showAuthDialog(BuildContext context, AuthService auth) {
   );
 }
 
+/// The stateful body of the auth dialog; toggles between sign-in and sign-up.
 class _AuthDialog extends StatefulWidget {
   const _AuthDialog({required this.auth});
   final AuthService auth;
@@ -19,11 +20,16 @@ class _AuthDialog extends StatefulWidget {
 }
 
 class _AuthDialogState extends State<_AuthDialog> {
+  /// False = sign in, true = create account (shows the display-name field).
   bool _signUp = false;
   final _email = TextEditingController();
   final _password = TextEditingController();
   final _name = TextEditingController();
+
+  /// True while a request is in flight; disables the submit button.
   bool _busy = false;
+
+  /// Last error message to display, or null.
   String? _error;
 
   @override
@@ -34,6 +40,9 @@ class _AuthDialogState extends State<_AuthDialog> {
     super.dispose();
   }
 
+  /// Runs sign-in or sign-up depending on [_signUp], closing the dialog on
+  /// success or showing the error inline on failure. For sign-up, an empty
+  /// display name falls back to the email address.
   Future<void> _submit() async {
     final navigator = Navigator.of(context);
     setState(() {

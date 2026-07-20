@@ -21,22 +21,34 @@ class ImportTab extends StatefulWidget {
   State<ImportTab> createState() => _ImportTabState();
 }
 
+/// The two lookup modes: exact printing vs. name search.
 enum _Mode { setNumber, name }
 
 class _ImportTabState extends State<ImportTab> {
+  /// Scryfall client owned by this tab (disposed with it).
   final _scryfall = ScryfallService();
 
+  /// Active lookup mode.
   _Mode _mode = _Mode.setNumber;
+
+  // Text controllers backing the entry fields.
   final _setController = TextEditingController();
   final _numberController = TextEditingController();
   final _quantityController = TextEditingController(text: '1');
   final _nameController = TextEditingController();
+
+  // Focus nodes used to chain keyboard entry (set → number → quantity).
   final _setFocus = FocusNode();
   final _numberFocus = FocusNode();
   final _quantityFocus = FocusNode();
 
+  /// True while a Scryfall lookup/search is in flight.
   bool _loading = false;
+
+  /// True while a CSV import is running.
   bool _importing = false;
+
+  /// Last error message to show, or null.
   String? _error;
 
   /// Results of a name search (multiple printings to choose from).
@@ -62,6 +74,9 @@ class _ImportTabState extends State<ImportTab> {
     super.dispose();
   }
 
+  /// Looks up the exact printing and shows it in the add panel (without adding),
+  /// so foil/quantity can be chosen before committing. Compare
+  /// [_quickAddBySetNumber], which adds immediately.
   Future<void> _lookupBySetNumber() async {
     final set = _setController.text.trim();
     final number = _numberController.text.trim();
@@ -130,6 +145,7 @@ class _ImportTabState extends State<ImportTab> {
     }
   }
 
+  /// Searches Scryfall by name and shows the matching printings to choose from.
   Future<void> _searchByName() async {
     final name = _nameController.text.trim();
     if (name.isEmpty) {
@@ -155,6 +171,8 @@ class _ImportTabState extends State<ImportTab> {
     }
   }
 
+  /// Adds [card] to the collection (merging into a matching entry), records it
+  /// as the "last added" card, and shows a confirming SnackBar.
   Future<void> _addCard(MtgCard card) async {
     final result = await widget.store.addCard(card);
     if (!mounted) return;
@@ -178,6 +196,8 @@ class _ImportTabState extends State<ImportTab> {
     );
   }
 
+  /// Prompts for a CSV file, imports it via [CsvImportService], reloads the
+  /// collection, and shows a summary dialog.
   Future<void> _importCsv() async {
     final picked = await FilePicker.pickFiles(
       type: FileType.custom,
@@ -209,6 +229,8 @@ class _ImportTabState extends State<ImportTab> {
     }
   }
 
+  /// Shows the post-import dialog: counts of imported/skipped rows and the list
+  /// of identifiers Scryfall couldn't match.
   void _showImportSummary(CsvImportResult result) {
     showDialog<void>(
       context: context,
@@ -321,6 +343,8 @@ class _ImportTabState extends State<ImportTab> {
     );
   }
 
+  /// The set-code + collector-number + quantity entry row, wired for fast
+  /// keyboard entry (Enter chains fields, then adds).
   Widget _buildSetNumberForm() {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -389,6 +413,7 @@ class _ImportTabState extends State<ImportTab> {
     );
   }
 
+  /// The card-name search row.
   Widget _buildNameForm() {
     return Row(
       children: [
@@ -413,6 +438,9 @@ class _ImportTabState extends State<ImportTab> {
     );
   }
 
+  /// The lower results area, whose content depends on state: the add panel for
+  /// a chosen printing, the name-search result list, the last-added card, or an
+  /// idle hint.
   Widget _buildResults() {
     // A single looked-up/selected printing ready to add.
     if (_selected != null) {
@@ -471,6 +499,8 @@ class _ImportTabState extends State<ImportTab> {
     );
   }
 
+  /// The "Last added" confirmation card (large image + printing + how the add
+  /// affected the collection).
   Widget _buildLastAdded(_LastAdded last) {
     final card = last.card;
     final scheme = Theme.of(context).colorScheme;
@@ -545,8 +575,13 @@ class _LastAdded {
     required this.totalQuantity,
   });
 
+  /// The card that was added.
   final MtgCard card;
+
+  /// True if it merged into an existing entry rather than creating a new one.
   final bool merged;
+
+  /// Resulting total quantity of the affected entry.
   final int totalQuantity;
 }
 
@@ -554,8 +589,13 @@ class _LastAdded {
 class _AddCardPanel extends StatefulWidget {
   const _AddCardPanel({required this.json, required this.onAdd, this.onBack});
 
+  /// Raw Scryfall JSON for the printing being previewed.
   final Map<String, dynamic> json;
+
+  /// Called with the fully-built card when the user taps Add.
   final Future<void> Function(MtgCard) onAdd;
+
+  /// Optional "back to results" callback (null in single-lookup mode).
   final VoidCallback? onBack;
 
   @override
@@ -567,6 +607,8 @@ class _AddCardPanelState extends State<_AddCardPanel> {
   int _quantity = 1;
   bool _adding = false;
 
+  /// Whether this printing has a foil finish available (has a foil price or is
+  /// flagged foil), which gates the Foil toggle.
   bool get _hasFoil {
     final prices = widget.json['prices'] as Map<String, dynamic>?;
     return prices?['usd_foil'] != null ||
