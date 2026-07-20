@@ -510,7 +510,12 @@ class _ImportTabState extends State<ImportTab> {
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            CardImage(url: card.imageUrl, width: 200, height: 280),
+            CardImage(
+              url: card.imageUrl,
+              width: 280,
+              height: 392,
+              enlargeOnHover: false,
+            ),
             const SizedBox(width: 20),
             Expanded(
               child: Column(
@@ -626,7 +631,12 @@ class _AddCardPanelState extends State<_AddCardPanel> {
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            CardImage(url: preview.imageUrl, width: 200, height: 280),
+            CardImage(
+              url: preview.imageUrl,
+              width: 200,
+              height: 280,
+              enlargeOnHover: false,
+            ),
             const SizedBox(width: 20),
             Expanded(
               child: Column(

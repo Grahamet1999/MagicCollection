@@ -648,11 +648,6 @@ class _CardTile extends StatelessWidget {
                     left: 6,
                     child: _badge(context, Icons.auto_awesome, 'Foil'),
                   ),
-                Positioned(
-                  top: 6,
-                  right: 6,
-                  child: _badge(context, null, '×${card.quantity}'),
-                ),
                 if (selectionMode)
                   Positioned(
                     bottom: 6,
@@ -695,9 +690,24 @@ class _CardTile extends StatelessWidget {
                         overflow: TextOverflow.ellipsis,
                         style: Theme.of(context).textTheme.titleSmall,
                       ),
-                      Text(
-                        '${card.setCode} #${card.collectorNumber}'
-                        '${card.priceUsd != null ? ' • \$${card.priceUsd!.toStringAsFixed(2)}' : ''}',
+                      // Quantity lives here (bold) rather than over the card's
+                      // mana cost, alongside the set/number and price.
+                      Text.rich(
+                        TextSpan(
+                          children: [
+                            TextSpan(
+                              text: '×${card.quantity}',
+                              style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                color: scheme.primary,
+                              ),
+                            ),
+                            TextSpan(
+                              text: ' • ${card.setCode} #${card.collectorNumber}'
+                                  '${card.priceUsd != null ? ' • \$${card.priceUsd!.toStringAsFixed(2)}' : ''}',
+                            ),
+                          ],
+                        ),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: Theme.of(context).textTheme.bodySmall,
@@ -953,11 +963,6 @@ class _AggregatedTile extends StatelessWidget {
                     left: 6,
                     child: _badge(context, Icons.auto_awesome, 'Foil'),
                   ),
-                Positioned(
-                  top: 6,
-                  right: 6,
-                  child: _badge(context, null, '×${card.total}'),
-                ),
                 if (card.isSplit)
                   Positioned(
                     bottom: 6,
@@ -982,9 +987,23 @@ class _AggregatedTile extends StatelessWidget {
                   overflow: TextOverflow.ellipsis,
                   style: Theme.of(context).textTheme.titleSmall,
                 ),
-                Text(
-                  '${card.setCode} #${card.collectorNumber}'
-                  '${card.priceUsd != null ? ' • \$${card.priceUsd!.toStringAsFixed(2)}' : ''}',
+                // Total owned (bold) shown here rather than over the mana cost.
+                Text.rich(
+                  TextSpan(
+                    children: [
+                      TextSpan(
+                        text: '×${card.total}',
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          color: Theme.of(context).colorScheme.primary,
+                        ),
+                      ),
+                      TextSpan(
+                        text: ' • ${card.setCode} #${card.collectorNumber}'
+                            '${card.priceUsd != null ? ' • \$${card.priceUsd!.toStringAsFixed(2)}' : ''}',
+                      ),
+                    ],
+                  ),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: Theme.of(context).textTheme.bodySmall,
