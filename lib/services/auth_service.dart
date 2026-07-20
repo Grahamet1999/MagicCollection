@@ -14,8 +14,13 @@ class AppUser {
     required this.displayName,
   });
 
+  /// Firebase Auth user id — the stable key used throughout the cloud data.
   final String uid;
+
+  /// The account's email address.
   final String email;
+
+  /// Name shown in the UI and attached to published group cards.
   final String displayName;
 }
 
@@ -28,6 +33,7 @@ class AuthService extends ChangeNotifier {
 
   final http.Client _client;
 
+  // SharedPreferences keys for the persisted session.
   static const _kUid = 'auth_uid';
   static const _kEmail = 'auth_email';
   static const _kName = 'auth_name';
@@ -36,11 +42,20 @@ class AuthService extends ChangeNotifier {
   static const _kExpiry = 'auth_expiry_ms';
 
   AppUser? _currentUser;
+
+  /// Short-lived Firebase id token sent as the RTDB `auth` param.
   String? _idToken;
+
+  /// Long-lived token used to mint fresh id tokens without re-login.
   String? _refreshToken;
+
+  /// When [_idToken] stops being valid; drives the refresh in [idToken].
   DateTime _expiry = DateTime.fromMillisecondsSinceEpoch(0);
 
+  /// The signed-in user, or null when signed out.
   AppUser? get currentUser => _currentUser;
+
+  /// Whether a user is currently signed in.
   bool get isSignedIn => _currentUser != null;
 
   static const _identityBase =
@@ -64,6 +79,9 @@ class AuthService extends ChangeNotifier {
     }
   }
 
+  /// Creates a new account, sets its [displayName], and signs it in. The two
+  /// REST calls (create, then update the name) are required because Identity
+  /// Toolkit's signUp doesn't accept a display name directly.
   Future<void> signUp(
     String email,
     String password,
@@ -83,6 +101,7 @@ class AuthService extends ChangeNotifier {
     await _apply(res, emailFallback: email, nameFallback: displayName);
   }
 
+  /// Signs in with an existing email/password and persists the session.
   Future<void> signIn(String email, String password) async {
     final res =
         await _post('$_identityBase:signInWithPassword?key=${FirebaseConfig.apiKey}', {
@@ -94,6 +113,7 @@ class AuthService extends ChangeNotifier {
         emailFallback: email, nameFallback: res['displayName'] as String? ?? '');
   }
 
+  /// Clears the in-memory and persisted session and notifies listeners.
   Future<void> signOut() async {
     _currentUser = null;
     _idToken = null;
@@ -130,6 +150,9 @@ class AuthService extends ChangeNotifier {
     return _idToken!;
   }
 
+  /// Stores the tokens/user from an auth [res]ponse in memory and prefs, then
+  /// notifies listeners. [emailFallback]/[nameFallback] fill in fields the
+  /// response may omit.
   Future<void> _apply(
     Map<String, dynamic> res, {
     required String emailFallback,
@@ -155,6 +178,8 @@ class AuthService extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// POSTs [body] as JSON to [url] and returns the decoded response, throwing
+  /// an [AuthException] with a friendly message on any non-200 status.
   Future<Map<String, dynamic>> _post(String url, Map<String, dynamic> body) async {
     final res = await _client.post(
       Uri.parse(url),
@@ -193,6 +218,7 @@ class AuthService extends ChangeNotifier {
   }
 }
 
+/// A user-facing authentication error (already run through [_friendly]).
 class AuthException implements Exception {
   AuthException(this.message);
   final String message;

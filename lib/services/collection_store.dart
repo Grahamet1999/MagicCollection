@@ -27,6 +27,7 @@ class CollectionStore extends ChangeNotifier {
   bool _sortAscending = true;
   Set<String> _selectedTags = {};
 
+  // Read-only views of the current state for the UI to render.
   List<Folder> get folders => _folders;
   List<MtgCard> get cards => _cards;
 
@@ -51,6 +52,9 @@ class CollectionStore extends ChangeNotifier {
   double get totalValue =>
       _cards.fold(0.0, (sum, c) => sum + (c.priceUsd ?? 0) * c.quantity);
 
+  /// Reloads folders, counts, and the filtered/sorted card list from the
+  /// database using the current query/folder/sort/tag filters, then notifies
+  /// listeners. Every mutator below ends by calling this.
   Future<void> load() async {
     _folders = await _db.getFolders();
     _folderCounts = await _db.folderCardCounts();
@@ -68,6 +72,7 @@ class CollectionStore extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Restricts the view to cards carrying any of [tags] ("" set = no filter).
   Future<void> setTagFilter(Set<String> tags) async {
     _selectedTags = tags;
     await load();
@@ -79,6 +84,9 @@ class CollectionStore extends ChangeNotifier {
     await load();
   }
 
+  /// Collapses entries sharing a printing (set + number + foil) into one
+  /// [AggregatedCard] per printing, recording each folder location and the
+  /// combined total. Used only in the "All cards" view.
   List<AggregatedCard> _aggregate(List<MtgCard> cards) {
     final folderName = {for (final f in _folders) f.id: f.name};
     final byKey = <String, List<MtgCard>>{};
@@ -113,6 +121,8 @@ class CollectionStore extends ChangeNotifier {
     return result;
   }
 
+  /// Sorts aggregated tiles by the active [_sort]/[_sortAscending], mirroring
+  /// the ordering the database applies to non-aggregated views.
   void _sortAggregated(List<AggregatedCard> list) {
     int cmp(AggregatedCard a, AggregatedCard b) {
       switch (_sort) {
@@ -143,17 +153,21 @@ class CollectionStore extends ChangeNotifier {
     list.sort((a, b) => _sortAscending ? cmp(a, b) : -cmp(a, b));
   }
 
+  /// Changes the sort field/direction and reloads.
   Future<void> setSort(CardSort sort, bool ascending) async {
     _sort = sort;
     _sortAscending = ascending;
     await load();
   }
 
+  /// Sets the search query (name/text) and reloads.
   Future<void> setQuery(String value) async {
     _query = value;
     await load();
   }
 
+  /// Selects which folder to show: null = All cards, [unfiledSentinel] =
+  /// Unfiled, otherwise a folder id.
   Future<void> selectFolder(int? folderId) async {
     _selectedFolderId = folderId;
     await load();
@@ -166,11 +180,13 @@ class CollectionStore extends ChangeNotifier {
     return result;
   }
 
+  /// Persists edits to an existing card entry.
   Future<void> updateCard(MtgCard card) async {
     await _db.updateCard(card);
     await load();
   }
 
+  /// Deletes a single card entry by id.
   Future<void> deleteCard(int cardId) async {
     await _db.deleteCard(cardId);
     await load();
@@ -190,6 +206,7 @@ class CollectionStore extends ChangeNotifier {
     await load();
   }
 
+  /// Moves several whole entries into [destFolderId] (bulk selection move).
   Future<void> moveCards(List<MtgCard> cards, int? destFolderId) async {
     for (final c in cards) {
       await _db.moveQuantityToFolder(c, c.quantity, destFolderId);
@@ -197,6 +214,7 @@ class CollectionStore extends ChangeNotifier {
     await load();
   }
 
+  /// Deletes several entries by id (bulk selection delete).
   Future<void> deleteCards(List<int> cardIds) async {
     await _db.deleteCards(cardIds);
     await load();
@@ -241,11 +259,13 @@ class CollectionStore extends ChangeNotifier {
     }
   }
 
+  /// Creates a new folder and reloads.
   Future<void> addFolder(String name) async {
     await _db.addFolder(name);
     await load();
   }
 
+  /// Renames an existing folder and reloads.
   Future<void> renameFolder(int id, String name) async {
     await _db.renameFolder(id, name);
     await load();
@@ -262,7 +282,11 @@ class CollectionStore extends ChangeNotifier {
 /// Result of [CollectionStore.refreshPrices].
 class PriceRefreshResult {
   const PriceRefreshResult({required this.updated, required this.total});
+
+  /// Number of card entries whose stored price changed.
   final int updated;
+
+  /// Total number of card entries checked.
   final int total;
 }
 
@@ -288,8 +312,14 @@ class AggregatedCard {
   final String? imageUrl;
   final double? priceUsd;
   final String colors;
+
+  /// Combined quantity across all folder locations.
   final int total;
+
+  /// Per-location breakdown: the folder label ("Unfiled" or a folder name) and
+  /// how many copies live there.
   final List<({String label, int qty})> locations;
 
+  /// True when this printing is split across more than one folder.
   bool get isSplit => locations.length > 1;
 }

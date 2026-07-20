@@ -31,17 +31,29 @@ class GroupsScreen extends StatefulWidget {
 }
 
 class _GroupsScreenState extends State<GroupsScreen> {
+  /// Groups the signed-in user belongs to.
   List<Group> _myGroups = [];
+
+  /// The group currently being viewed.
   Group? _selected;
+
+  /// Live subscription to the selected group's pooled cards (RTDB SSE).
   StreamSubscription<List<GroupCard>>? _sub;
+
+  /// Latest pooled cards from [_sub], flattened across all members.
   List<GroupCard> _binder = [];
+
   bool _loading = true;
   bool _publishing = false;
   String? _error;
+
+  // Binder view filters.
   String _search = '';
   String _ownerFilter = ''; // '' = everyone
   final Set<String> _tagFilter = {};
 
+  /// The signed-in user's uid (only used while this screen is shown, so the
+  /// user is guaranteed non-null).
   String get _uid => widget.auth.currentUser!.uid;
 
   @override
@@ -56,6 +68,8 @@ class _GroupsScreenState extends State<GroupsScreen> {
     super.dispose();
   }
 
+  /// Fetches the user's groups and auto-selects the first one. Called on load
+  /// and after create/join/leave/delete to refresh the list.
   Future<void> _loadGroups() async {
     setState(() {
       _loading = true;
@@ -76,6 +90,8 @@ class _GroupsScreenState extends State<GroupsScreen> {
     }
   }
 
+  /// Selects [group] to view: cancels any prior subscription and opens a fresh
+  /// live stream of its pooled cards into [_binder].
   void _select(Group group) {
     _sub?.cancel();
     setState(() {
@@ -89,6 +105,7 @@ class _GroupsScreenState extends State<GroupsScreen> {
     );
   }
 
+  /// Prompts for a name, creates a group, and selects it.
   Future<void> _createGroup() async {
     final name = await promptForName(context,
         title: 'New group', label: 'Group name');
@@ -100,6 +117,7 @@ class _GroupsScreenState extends State<GroupsScreen> {
     });
   }
 
+  /// Prompts for an invite code, joins the group, and selects it.
   Future<void> _joinGroup() async {
     final code = await promptForName(context,
         title: 'Join group', label: 'Invite code');
@@ -111,6 +129,8 @@ class _GroupsScreenState extends State<GroupsScreen> {
     });
   }
 
+  /// Leaves [group] after confirmation (removes your published cards but not
+  /// the group), then refreshes the list.
   Future<void> _leaveGroup(Group group) async {
     final ok = await _confirm(
       'Leave "${group.name}"?',
@@ -119,11 +139,13 @@ class _GroupsScreenState extends State<GroupsScreen> {
     );
     if (!ok) return;
     await _sub?.cancel();
-    await _guard(() => widget.groups.leaveGroup(group.id));
+    await _guard(() => widget.groups.leaveGroup(group));
     setState(() => _selected = null);
     await _loadGroups();
   }
 
+  /// Deletes [group] entirely (owner-only) after confirmation, then refreshes
+  /// the list. See [GroupService.deleteGroup] for the resilient delete flow.
   Future<void> _deleteGroup(Group group) async {
     final ok = await _confirm(
       'Delete "${group.name}"?',
@@ -137,6 +159,8 @@ class _GroupsScreenState extends State<GroupsScreen> {
     await _loadGroups();
   }
 
+  /// Shows a generic yes/no confirmation dialog with a destructive-colored
+  /// Confirm button. Returns true only if the user confirms.
   Future<bool> _confirm(String title, String body) async {
     final r = await showDialog<bool>(
       context: context,
@@ -159,6 +183,8 @@ class _GroupsScreenState extends State<GroupsScreen> {
     return r ?? false;
   }
 
+  /// Publishes a snapshot of the entire local collection to the selected group
+  /// (the "Sync my collection" action), reporting the result via a SnackBar.
   Future<void> _publish() async {
     if (_selected == null) return;
     setState(() => _publishing = true);
@@ -176,6 +202,8 @@ class _GroupsScreenState extends State<GroupsScreen> {
     }
   }
 
+  /// Removes all of your published copies of [group]'s card from the binder
+  /// (after confirmation); your local collection is untouched.
   Future<void> _removeMine(_CardGroup group) async {
     final hold = group.owners[_uid];
     if (hold == null) return;
@@ -203,6 +231,8 @@ class _GroupsScreenState extends State<GroupsScreen> {
     });
   }
 
+  /// Runs [action], surfacing any error as a SnackBar instead of letting it
+  /// escape — the common error handler for the mutating actions above.
   Future<void> _guard(Future<void> Function() action) async {
     try {
       await action();
@@ -311,6 +341,7 @@ class _GroupsScreenState extends State<GroupsScreen> {
     );
   }
 
+  /// Shown when the user belongs to no groups: create/join call-to-action.
   Widget _emptyState(BuildContext context) {
     return Center(
       child: Column(
@@ -338,6 +369,8 @@ class _GroupsScreenState extends State<GroupsScreen> {
     );
   }
 
+  /// The main layout: group picker + invite/members/options row, the
+  /// search/owner/tag filter row, and the live binder list.
   Widget _buildBody(BuildContext context) {
     final group = _selected;
     return Column(
@@ -438,6 +471,9 @@ class _GroupsScreenState extends State<GroupsScreen> {
     );
   }
 
+  /// The scrollable binder: one row per card, each listing every owner's
+  /// holdings. Shows an appropriate empty message when nothing is present or
+  /// nothing matches the filters.
   Widget _buildBinder(BuildContext context) {
     final groups = _grouped;
     if (groups.isEmpty) {
@@ -532,6 +568,8 @@ class _GroupsScreenState extends State<GroupsScreen> {
     );
   }
 
+  /// The tag-filter dropdown: toggling a tag adds/removes it from [_tagFilter];
+  /// "Clear filter" empties the set.
   Widget _buildTagFilter(BuildContext context) {
     return PopupMenuButton<String>(
       tooltip: 'Filter by tag',
@@ -574,18 +612,34 @@ class _GroupsScreenState extends State<GroupsScreen> {
   }
 }
 
-/// One card in the grouped binder, with each owner's holdings.
+/// One card (by name) in the grouped binder, with each owner's holdings keyed
+/// by owner uid.
 class _CardGroup {
   _CardGroup({required this.name});
+
+  /// Display name of the card.
   final String name;
+
+  /// First image seen for this card, used as the row thumbnail.
   String? imageUrl;
+
+  /// Owner uid → their holdings of this card.
   final Map<String, _OwnerHold> owners = {};
 }
 
+/// One owner's holdings of a single card within the binder.
 class _OwnerHold {
   _OwnerHold({required this.name});
+
+  /// Owner's display name.
   final String name;
+
+  /// Total copies this owner has published (summed across printings).
   int qty = 0;
+
+  /// RTDB card keys backing this holding, needed to edit/remove the entries.
   final List<String> keys = [];
+
+  /// Union of trade tags across this owner's copies.
   final Set<String> tags = {};
 }

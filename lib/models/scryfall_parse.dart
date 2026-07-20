@@ -44,6 +44,8 @@ String typeLineFromScryfall(Map<String, dynamic> json) {
   return '';
 }
 
+/// Best available card image URL, preferring `normal` then `large` then
+/// `small`. Falls back to the front face's images for double-faced cards.
 String? imageUrlFromScryfall(Map<String, dynamic> json) {
   final images = json['image_uris'] as Map<String, dynamic>?;
   if (images != null) {
@@ -62,6 +64,8 @@ String? imageUrlFromScryfall(Map<String, dynamic> json) {
   return null;
 }
 
+/// USD price for the requested finish. Prefers the foil/non-foil price matching
+/// [foil], then falls back to whichever price is present. Null if unpriced.
 double? priceFromScryfall(Map<String, dynamic> json, bool foil) {
   final prices = json['prices'] as Map<String, dynamic>?;
   if (prices == null) return null;

@@ -1,3 +1,7 @@
+// Integration tests for the SQLite backend against a throwaway on-disk database
+// (created in setUp, deleted in tearDown). Covers card add/merge, splitting
+// stacks across folders, color sorting, tag round-trips, type bucketing, and
+// deck add/merge/move/cascade behavior.
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -98,6 +102,7 @@ void main() {
     expect(primaryType('Enchantment — Aura'), CardType.enchantment);
   });
 
+  // Builds a minimal DeckCard for the deck tests with sensible defaults.
   DeckCard deckCard(int deckId,
           {String name = 'X',
           String number = '1',

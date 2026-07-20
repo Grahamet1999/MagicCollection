@@ -20,21 +20,43 @@ class GroupCard {
     required this.tags,
   });
 
+  /// Auth uid of the member who published this card (implied by the RTDB path).
   final String ownerUid;
+
+  /// Display name of that member, resolved for the binder UI.
   final String ownerName;
 
   /// Stable RTDB key for this card within the owner's subtree.
   final String key;
 
+  /// Card name.
   final String name;
+
+  /// Set code, e.g. "NEO".
   final String setCode;
+
+  /// Collector number within the set.
   final String collectorNumber;
+
+  /// Whether this is the foil printing.
   final bool foil;
+
+  /// How many copies the owner has.
   final int quantity;
+
+  /// Scryfall image URL, if known.
   final String? imageUrl;
+
+  /// Latest USD price snapshot, if known.
   final double? priceUsd;
+
+  /// Colors in WUBRG order ("" = colorless).
   final String colors;
+
+  /// Color identity in WUBRG order, for commander filtering.
   final String colorIdentity;
+
+  /// Trade tags carried over from the owner's collection (e.g. "Trade").
   final List<String> tags;
 
   /// Builds the RTDB payload for a member's published card (owner attribution is
@@ -53,6 +75,11 @@ class GroupCard {
         'updatedAt': DateTime.now().toUtc().toIso8601String(),
       };
 
+  /// Rebuilds a [GroupCard] from its RTDB node.
+  ///
+  /// [ownerUid]/[ownerName]/[key] come from the card's path (they aren't stored
+  /// in the value); the remaining fields are read from [json] with defensive
+  /// defaults for missing or malformed cloud data.
   factory GroupCard.fromRtdb({
     required String ownerUid,
     required String ownerName,

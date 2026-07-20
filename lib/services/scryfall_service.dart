@@ -125,6 +125,8 @@ class ScryfallService {
     return ScryfallCollectionResult(found: found, notFound: notFound);
   }
 
+  /// Extracts Scryfall's `details` error string from a failed [res]ponse,
+  /// falling back to a generic message when the body isn't the expected shape.
   String _messageFor(http.Response res) {
     try {
       final body = jsonDecode(res.body) as Map<String, dynamic>;
@@ -136,6 +138,7 @@ class ScryfallService {
     return 'Scryfall request failed (HTTP ${res.statusCode}).';
   }
 
+  /// Closes the underlying HTTP client.
   void dispose() => _client.close();
 }
 
@@ -150,6 +153,7 @@ class ScryfallCollectionResult {
   final List<Map<String, dynamic>> notFound;
 }
 
+/// A user-facing error from a Scryfall request.
 class ScryfallException implements Exception {
   ScryfallException(this.message);
   final String message;

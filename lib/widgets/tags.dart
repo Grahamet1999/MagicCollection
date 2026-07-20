@@ -117,6 +117,7 @@ class _TagEditorDialogState extends State<_TagEditorDialog> {
     );
   }
 
+  /// Adds the typed custom tag to the selection and clears the field.
   void _addCustom() {
     final t = _customController.text.trim();
     if (t.isNotEmpty) {

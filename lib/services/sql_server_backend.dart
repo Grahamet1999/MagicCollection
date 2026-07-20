@@ -27,6 +27,10 @@ class SqlServerBackend implements CardBackend {
     return db;
   }
 
+  /// Connects to the local SQL Server, creating the app database if needed, then
+  /// ensures the schema exists and is migrated. Throws
+  /// [BackendUnavailableException] on any connection failure so the facade can
+  /// fall back to SQLite.
   @override
   Future<void> init() async {
     if (_odbc != null) return;
@@ -55,6 +59,9 @@ class SqlServerBackend implements CardBackend {
     _odbc = odbc;
   }
 
+  /// Adds columns introduced after the initial schema (colors, color identity,
+  /// tags). Each guarded by COL_LENGTH so it's a no-op on already-migrated
+  /// databases — this is the SQL Server counterpart to SQLite's onUpgrade.
   Future<void> _migrate(DartOdbc odbc) async {
     await odbc.execute(
       "IF COL_LENGTH('dbo.cards', 'colors') IS NULL "
@@ -70,6 +77,9 @@ class SqlServerBackend implements CardBackend {
     );
   }
 
+  /// Creates the folders/cards/decks/deck_cards tables if they don't yet exist.
+  /// Each CREATE is guarded by OBJECT_ID so re-running is safe. Mirrors the
+  /// SQLite schema in [SqliteBackend].
   Future<void> _createSchema(DartOdbc odbc) async {
     await odbc.execute('''
       IF OBJECT_ID('dbo.folders', 'U') IS NULL
@@ -243,6 +253,7 @@ class SqlServerBackend implements CardBackend {
     }
   }
 
+  /// Re-files a card into [folderId] (null = unfiled) without touching quantity.
   Future<void> _moveCardToFolder(int cardId, int? folderId) async {
     await _db.execute(
       'UPDATE dbo.cards SET folder_id = ${_lit(folderId)} '
@@ -250,6 +261,8 @@ class SqlServerBackend implements CardBackend {
     );
   }
 
+  /// SQL predicate matching a given folder, using `IS NULL` for the unfiled case
+  /// (since `folder_id = NULL` never matches in SQL).
   static String _folderCondition(int? folderId) =>
       folderId == null ? 'folder_id IS NULL' : 'folder_id = ${_lit(folderId)}';
 
@@ -285,6 +298,8 @@ class SqlServerBackend implements CardBackend {
     return rows.map(_cardFromRow).toList();
   }
 
+  /// Maps a [CardSort] to a SQL ORDER BY clause. `TRY_CONVERT(INT, ...)` sorts
+  /// numeric collector numbers correctly while tolerating non-numeric ones.
   String _orderBy(CardSort sort, bool ascending) {
     final dir = ascending ? 'ASC' : 'DESC';
     switch (sort) {
@@ -304,6 +319,8 @@ class SqlServerBackend implements CardBackend {
     }
   }
 
+  /// SQL mirror of [MtgCard.colorRank]: W,U,B,R,G, then multicolor, then
+  /// colorless, so color sorting matches the aggregated in-memory view.
   static const String _colorRankSql = '''
     CASE
       WHEN colors IS NULL OR colors = '' THEN 7
@@ -518,6 +535,10 @@ class SqlServerBackend implements CardBackend {
 
   // ---- Helpers -------------------------------------------------------------
 
+  /// Renders [value] as a safe inline SQL literal (see the class doc for why
+  /// parameters aren't used). Strings are single-quoted with embedded quotes
+  /// doubled to prevent SQL injection, and prefixed `N` for Unicode; bools
+  /// become 1/0; null becomes NULL.
   static String _lit(Object? value) {
     if (value == null) return 'NULL';
     if (value is bool) return value ? '1' : '0';
@@ -527,6 +548,8 @@ class SqlServerBackend implements CardBackend {
     return "N'$escaped'";
   }
 
+  /// Rebuilds an [MtgCard] from a result row, coercing ODBC's loosely-typed
+  /// values via the `_as*` helpers.
   MtgCard _cardFromRow(Map<String, dynamic> r) {
     return MtgCard(
       id: _asInt(r['id']),
@@ -544,6 +567,7 @@ class SqlServerBackend implements CardBackend {
     );
   }
 
+  /// Rebuilds a [DeckCard] from a result row.
   DeckCard _deckCardFromRow(Map<String, dynamic> r) {
     return DeckCard(
       id: _asInt(r['id']),
@@ -563,6 +587,10 @@ class SqlServerBackend implements CardBackend {
     );
   }
 
+  // The ODBC layer can return numbers as int, num, or string depending on the
+  // column type, so these helpers coerce defensively.
+
+  /// Coerces an ODBC value to int?, parsing strings when needed.
   static int? _asInt(Object? v) {
     if (v == null) return null;
     if (v is int) return v;
@@ -570,6 +598,7 @@ class SqlServerBackend implements CardBackend {
     return int.tryParse(v.toString());
   }
 
+  /// Coerces an ODBC value to double?, parsing strings when needed.
   static double? _asDouble(Object? v) {
     if (v == null) return null;
     if (v is double) return v;
@@ -577,6 +606,8 @@ class SqlServerBackend implements CardBackend {
     return double.tryParse(v.toString());
   }
 
+  /// Coerces an ODBC value to bool, treating 1/"1"/"true" as true. SQL Server's
+  /// BIT columns are selected as INT (see [getCards]), so this handles both.
   static bool _asBool(Object? v) {
     if (v is bool) return v;
     if (v is num) return v != 0;

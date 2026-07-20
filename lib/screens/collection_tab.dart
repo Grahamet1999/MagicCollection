@@ -47,12 +47,14 @@ class _CollectionTabState extends State<CollectionTab> {
     super.dispose();
   }
 
+  /// Toggles whether [cardId] is in the multi-select set.
   void _toggleSelection(int cardId) {
     setState(() {
       if (!_selected.remove(cardId)) _selected.add(cardId);
     });
   }
 
+  /// Leaves multi-select mode and clears the selection.
   void _exitSelection() {
     setState(() {
       _selectionMode = false;
@@ -60,6 +62,7 @@ class _CollectionTabState extends State<CollectionTab> {
     });
   }
 
+  /// Prompts for a destination folder and moves all selected cards there.
   Future<void> _bulkMove() async {
     if (_selected.isEmpty) return;
     final result = await _pickFolder(
@@ -85,6 +88,7 @@ class _CollectionTabState extends State<CollectionTab> {
     );
   }
 
+  /// Confirms and permanently deletes all selected cards.
   Future<void> _bulkDelete() async {
     if (_selected.isEmpty) return;
     final count = _selected.length;
@@ -145,6 +149,8 @@ class _CollectionTabState extends State<CollectionTab> {
     );
   }
 
+  /// The main pane right of the sidebar: search/sort/tag/count/select bar, an
+  /// optional selection action bar, and the card grid.
   Widget _buildMain(BuildContext context) {
     final store = widget.store;
     return Column(
@@ -211,6 +217,8 @@ class _CollectionTabState extends State<CollectionTab> {
     );
   }
 
+  /// Summary line for the current view: unique/total counts and total value
+  /// (the "unique" figure only applies to the aggregated "All cards" view).
   String _countLabel(CollectionStore store) {
     final value = _money(store.totalValue);
     if (store.isAggregated) {
@@ -235,6 +243,8 @@ class _CollectionTabState extends State<CollectionTab> {
     return '\$$buf.$decPart';
   }
 
+  /// The responsive card grid: [_AggregatedTile]s in the "All cards" view or
+  /// interactive [_CardTile]s in a specific folder/Unfiled view.
   Widget _buildGrid(BuildContext context, CollectionStore store) {
     final isEmpty = store.isAggregated
         ? store.aggregatedCards.isEmpty
@@ -277,6 +287,7 @@ class _CollectionTabState extends State<CollectionTab> {
     );
   }
 
+  /// Human-readable label for a [CardSort] option.
   static String _sortLabel(CardSort s) {
     switch (s) {
       case CardSort.name:
@@ -294,6 +305,7 @@ class _CollectionTabState extends State<CollectionTab> {
     }
   }
 
+  /// The sort dropdown plus an ascending/descending toggle button.
   Widget _buildSortControl(BuildContext context, CollectionStore store) {
     return Row(
       mainAxisSize: MainAxisSize.min,
@@ -334,6 +346,7 @@ class _CollectionTabState extends State<CollectionTab> {
     );
   }
 
+  /// The tag-filter dropdown; toggling tags updates the store's tag filter.
   Widget _buildTagFilter(BuildContext context, CollectionStore store) {
     // Offer the presets plus any custom tags currently in view.
     final tags = <String>{
@@ -381,6 +394,8 @@ class _CollectionTabState extends State<CollectionTab> {
     );
   }
 
+  /// The bulk-action bar shown in selection mode: selected count, select/clear
+  /// all, and Delete / Move-to-folder actions.
   Widget _buildSelectionBar(BuildContext context, CollectionStore store) {
     final scheme = Theme.of(context).colorScheme;
     final visibleIds = store.cards.map((c) => c.id!).toSet();
@@ -429,6 +444,8 @@ class _CollectionTabState extends State<CollectionTab> {
   }
 }
 
+/// Left sidebar listing "All cards", "Unfiled", and each folder (with counts
+/// and rename/delete menus), plus a New-folder button.
 class _FolderSidebar extends StatelessWidget {
   const _FolderSidebar({required this.store});
 
@@ -492,6 +509,8 @@ class _FolderSidebar extends StatelessWidget {
     );
   }
 
+  /// One sidebar row. Shows a trailing count and, for real folders, a
+  /// rename/delete menu ([onRename]/[onDelete] are null for the fixed rows).
   Widget _navTile(
     BuildContext context, {
     required IconData icon,
@@ -532,11 +551,13 @@ class _FolderSidebar extends StatelessWidget {
     );
   }
 
+  /// Prompts for a name and creates a folder.
   Future<void> _createFolder(BuildContext context) async {
     final name = await _promptForName(context, title: 'New folder');
     if (name != null && name.isNotEmpty) await store.addFolder(name);
   }
 
+  /// Prompts for a new name and renames [folder].
   Future<void> _renameFolder(BuildContext context, Folder folder) async {
     final name = await _promptForName(
       context,
@@ -548,6 +569,7 @@ class _FolderSidebar extends StatelessWidget {
     }
   }
 
+  /// Confirms and deletes [folder]; its cards become unfiled, not deleted.
   Future<void> _deleteFolder(BuildContext context, Folder folder) async {
     final confirmed = await showDialog<bool>(
       context: context,
@@ -573,6 +595,10 @@ class _FolderSidebar extends StatelessWidget {
   }
 }
 
+/// A single collection card tile: image with foil/quantity/tag badges and a
+/// per-card action menu (edit tags, add to deck, move/split folder, edit
+/// quantity, delete). In selection mode it shows a check overlay and toggles
+/// on tap instead.
 class _CardTile extends StatelessWidget {
   const _CardTile({
     required this.card,
@@ -586,8 +612,14 @@ class _CardTile extends StatelessWidget {
   final MtgCard card;
   final CollectionStore store;
   final DeckStore deckStore;
+
+  /// Whether the grid is in multi-select mode.
   final bool selectionMode;
+
+  /// Whether this tile is currently selected.
   final bool selected;
+
+  /// Called when tapped in selection mode.
   final VoidCallback? onToggle;
 
   @override
@@ -703,6 +735,8 @@ class _CardTile extends StatelessWidget {
     return GestureDetector(onTap: onToggle, child: tile);
   }
 
+  /// A small translucent overlay badge (optional [icon] + [text]) drawn on the
+  /// card image, e.g. "Foil" or "×3".
   Widget _badge(BuildContext context, IconData? icon, String text) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
@@ -730,6 +764,7 @@ class _CardTile extends StatelessWidget {
     );
   }
 
+  /// A small colored tag chip overlaid on the card image.
   Widget _tagBadge(BuildContext context, String tag) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
@@ -745,6 +780,7 @@ class _CardTile extends StatelessWidget {
     );
   }
 
+  /// Dispatches the per-card menu selection to the matching handler.
   void _onAction(BuildContext context, String action) {
     switch (action) {
       case 'tags':
@@ -762,11 +798,15 @@ class _CardTile extends StatelessWidget {
     }
   }
 
+  /// Opens the tag editor for this card and saves the result.
   Future<void> _editTags(BuildContext context) async {
     final result = await showTagEditor(context, card.tags);
     if (result != null) await store.setTags(card, result);
   }
 
+  /// Adds this card to a chosen deck/board. Enriches it with cmc/type_line from
+  /// Scryfall (not stored in the collection) so it groups and curves correctly,
+  /// falling back to the stored fields if the lookup fails.
   Future<void> _addToDeck(BuildContext context) async {
     if (deckStore.decks.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -809,6 +849,8 @@ class _CardTile extends StatelessWidget {
     );
   }
 
+  /// Builds a [DeckCard] from this collection card's stored fields (used when
+  /// the Scryfall enrichment in [_addToDeck] is unavailable).
   DeckCard _deckCardFromCollection(int deckId, String board) {
     return DeckCard(
       deckId: deckId,
@@ -825,6 +867,7 @@ class _CardTile extends StatelessWidget {
     );
   }
 
+  /// Moves this whole card entry to a chosen folder.
   Future<void> _moveToFolder(BuildContext context) async {
     final result = await _pickFolder(
       context,
@@ -837,6 +880,7 @@ class _CardTile extends StatelessWidget {
     }
   }
 
+  /// Moves part of this stack to another folder (leaves the rest in place).
   Future<void> _splitToFolder(BuildContext context) async {
     final result = await showDialog<_SplitResult>(
       context: context,
@@ -847,6 +891,7 @@ class _CardTile extends StatelessWidget {
     }
   }
 
+  /// Prompts for a new quantity and updates this entry.
   Future<void> _editQuantity(BuildContext context) async {
     final controller = TextEditingController(text: '${card.quantity}');
     final qty = await showDialog<int>(
@@ -970,6 +1015,7 @@ class _AggregatedTile extends StatelessWidget {
     );
   }
 
+  /// A small translucent overlay badge (optional [icon] + [text]) on the image.
   Widget _badge(BuildContext context, IconData? icon, String text) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
@@ -998,11 +1044,13 @@ class _AggregatedTile extends StatelessWidget {
   }
 }
 
+/// Result of the folder chooser: the destination folder id, or null = Unfiled.
 class _MoveResult {
   const _MoveResult({required this.folderId});
   final int? folderId;
 }
 
+/// Result of [_DeckPickDialog]: the chosen deck and target board.
 class _DeckPick {
   const _DeckPick({required this.deckId, required this.board});
   final int deckId;
@@ -1072,6 +1120,8 @@ class _DeckPickDialogState extends State<_DeckPickDialog> {
   }
 }
 
+/// Result of [_SplitDialog]: how many copies to move and to which folder
+/// (null = Unfiled).
 class _SplitResult {
   const _SplitResult({required this.qty, required this.folderId});
   final int qty;
@@ -1238,6 +1288,8 @@ Future<_MoveResult?> _pickFolder(
   );
 }
 
+/// A folder name-entry dialog (create/rename); returns the trimmed name or null
+/// if cancelled. Local to this file so the label reads "Folder name".
 Future<String?> _promptForName(
   BuildContext context, {
   required String title,

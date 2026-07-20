@@ -5,8 +5,13 @@ import 'package:flutter/material.dart';
 class CardImage extends StatelessWidget {
   const CardImage({super.key, required this.url, this.width, this.height});
 
+  /// Image URL to load; a null/empty value shows the placeholder.
   final String? url;
+
+  /// Optional fixed width; null lets the parent size it.
   final double? width;
+
+  /// Optional fixed height; null lets the parent size it.
   final double? height;
 
   @override

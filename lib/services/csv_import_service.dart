@@ -19,6 +19,9 @@ class CsvImportService {
   final DatabaseService _db;
   final ScryfallService _scryfall;
 
+  /// Parses the CSV in [bytes], resolves every row against Scryfall in batches,
+  /// stores the matched printings (creating folders as needed), and returns a
+  /// [CsvImportResult] summarizing imported / not-found / skipped rows.
   Future<CsvImportResult> importFromBytes(Uint8List bytes) async {
     final content = _decode(bytes);
     final table = const CsvToListConverter(
@@ -119,6 +122,8 @@ class CsvImportService {
     return utf8.decode(bytes, allowMalformed: true);
   }
 
+  /// Lowercases and strips non-alphanumerics so header/alias matching ignores
+  /// case, spaces, and punctuation (e.g. "Collector #" → "collector").
   static String _normalize(String s) =>
       s.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]'), '');
 }
@@ -144,8 +149,11 @@ class _Columns {
   late final int foil;
   late final int folder;
 
+  /// True if rows can be identified — by a name column, or by both set and
+  /// collector-number columns.
   bool get hasIdentity => name >= 0 || (set >= 0 && number >= 0);
 
+  /// Returns the index of the first [aliases] entry present in [header], or -1.
   static int _find(List<String> header, List<String> aliases) {
     for (final alias in aliases) {
       final i = header.indexOf(alias);
@@ -177,14 +185,18 @@ class _Row {
   bool get bySet =>
       (set?.isNotEmpty ?? false) && (number?.isNotEmpty ?? false);
 
+  /// The Scryfall `/cards/collection` identifier map for this row.
   Map<String, String> get identifier => bySet
       ? {'set': set!.toLowerCase(), 'collector_number': number!}
       : {'name': name!};
 
+  /// A short human-readable label for this row, used in the not-found list.
   String describe() => bySet
       ? '${set!.toUpperCase()} #$number'
       : (name ?? '(unidentified row)');
 
+  /// Builds a [_Row] from raw [cells], or null if the row has no usable
+  /// identifier (neither a name nor a set+number pair).
   static _Row? fromCells(List<dynamic> cells, _Columns cols) {
     String? at(int i) {
       if (i < 0 || i >= cells.length) return null;
@@ -216,12 +228,14 @@ class _Row {
     );
   }
 
+  /// Parses a quantity cell, defaulting to 1 for missing/invalid/&lt;1 values.
   static int _parseQuantity(String? v) {
     if (v == null) return 1;
     final n = int.tryParse(v.trim());
     return (n == null || n < 1) ? 1 : n;
   }
 
+  /// Interprets a foil cell, treating foil/etched/yes/true/1/y as foil.
   static bool _parseFoil(String? v) {
     if (v == null) return false;
     final s = v.trim().toLowerCase();

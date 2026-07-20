@@ -34,6 +34,8 @@ class SqliteBackend implements CardBackend {
     _db = await databaseFactoryFfi.openDatabase(
       dbPath,
       options: OpenDatabaseOptions(
+        // Bump `version` and add an `onUpgrade` branch below whenever the schema
+        // changes, so existing local databases migrate forward in place.
         version: 3,
         onConfigure: (db) => db.execute('PRAGMA foreign_keys = ON'),
         onCreate: (db, version) async {
@@ -63,10 +65,12 @@ class SqliteBackend implements CardBackend {
           await _createDeckTables(db);
         },
         onUpgrade: (db, oldVersion, newVersion) async {
+          // v2 added color identity and the deck tables.
           if (oldVersion < 2) {
             await db.execute('ALTER TABLE cards ADD COLUMN color_identity TEXT');
             await _createDeckTables(db);
           }
+          // v3 added trade tags.
           if (oldVersion < 3) {
             await db.execute('ALTER TABLE cards ADD COLUMN tags TEXT');
           }
@@ -75,6 +79,8 @@ class SqliteBackend implements CardBackend {
     );
   }
 
+  /// Creates the `decks` and `deck_cards` tables. Shared by [init]'s onCreate
+  /// and the v1→v2 migration (decks were added in v2).
   Future<void> _createDeckTables(Database db) async {
     await db.execute('''
       CREATE TABLE decks (
@@ -110,6 +116,8 @@ class SqliteBackend implements CardBackend {
     _db = null;
   }
 
+  /// Builds an insertable `cards` row from [c], omitting `id` so SQLite
+  /// autoincrements it. Tags are JSON-encoded to fit a single text column.
   Map<String, Object?> _toRow(MtgCard c) => {
         'name': c.name,
         'set_code': c.setCode,
@@ -180,6 +188,8 @@ class SqliteBackend implements CardBackend {
   ) async {
     if (destFolderId == card.folderId) return;
     final moveQty = qty.clamp(1, card.quantity);
+    // If the destination folder already holds this printing, we merge into it;
+    // otherwise we either re-file the whole entry or split off a new one.
     final dest = await _matchEntry(
       card.setCode,
       card.collectorNumber,
@@ -189,6 +199,7 @@ class SqliteBackend implements CardBackend {
     final hasDest = dest != null;
 
     if (moveQty >= card.quantity) {
+      // Moving the entire stack.
       if (hasDest) {
         final total = (dest['quantity'] as int) + card.quantity;
         await _database.update('cards', {'quantity': total},
@@ -199,6 +210,7 @@ class SqliteBackend implements CardBackend {
             where: 'id = ?', whereArgs: [card.id]);
       }
     } else {
+      // Splitting: decrement the source and move only `moveQty` across.
       await _database.rawUpdate(
         'UPDATE cards SET quantity = quantity - ? WHERE id = ?',
         [moveQty, card.id],
@@ -270,6 +282,8 @@ class SqliteBackend implements CardBackend {
     return rows.map(_cardFromRow).toList();
   }
 
+  /// Maps a [CardSort] to a SQL ORDER BY clause. Ties break on name; set/number
+  /// sorting casts the collector number to an integer so "10" sorts after "9".
   String _orderBy(CardSort sort, bool ascending) {
     final dir = ascending ? 'ASC' : 'DESC';
     switch (sort) {
@@ -289,6 +303,8 @@ class SqliteBackend implements CardBackend {
     }
   }
 
+  /// SQL mirror of [MtgCard.colorRank]: W,U,B,R,G, then multicolor, then
+  /// colorless, so color sorting matches the aggregated in-memory view.
   static const String _colorRankSql = '''
     CASE
       WHEN colors IS NULL OR colors = '' THEN 7
@@ -428,6 +444,8 @@ class SqliteBackend implements CardBackend {
 
   @override
   Future<int> addOrMergeDeckCard(DeckCard card) async {
+    // A card is "the same" within a deck when printing, foil, AND board match —
+    // so the same card can exist independently on main vs. side.
     final existing = await _database.query(
       'deck_cards',
       columns: ['id', 'quantity'],
@@ -477,12 +495,14 @@ class SqliteBackend implements CardBackend {
     await _database.delete('deck_cards', where: 'id = ?', whereArgs: [id]);
   }
 
+  /// Insertable `deck_cards` row from [c] with `id` removed for autoincrement.
   Map<String, Object?> _deckToRow(DeckCard c) {
     final m = c.toMap();
     m.remove('id');
     return m;
   }
 
+  /// Rebuilds an [MtgCard] from a `cards` result row.
   MtgCard _cardFromRow(Map<String, Object?> r) {
     return MtgCard(
       id: r['id'] as int?,

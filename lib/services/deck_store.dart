@@ -24,10 +24,12 @@ class DeckStore extends ChangeNotifier {
   /// Lowercased card name → total quantity owned in the collection.
   Map<String, int> _owned = {};
 
+  // Read-only views of the current state for the UI to render.
   List<Deck> get decks => _decks;
   Map<int, int> get deckCounts => _deckCounts;
   int? get selectedDeckId => _selectedDeckId;
 
+  /// The currently selected deck, or null if none is selected.
   Deck? get selectedDeck {
     for (final d in _decks) {
       if (d.id == _selectedDeckId) return d;
@@ -35,8 +37,10 @@ class DeckStore extends ChangeNotifier {
     return null;
   }
 
+  /// Format label of the selected deck, if any.
   String? get format => selectedDeck?.format;
 
+  /// The selected deck's commander card, or null if none is set.
   DeckCard? get commander {
     for (final c in _deckCards) {
       if (c.board == DeckBoard.commander) return c;
@@ -44,9 +48,11 @@ class DeckStore extends ChangeNotifier {
     return null;
   }
 
+  /// Cards on the mainboard of the selected deck.
   List<DeckCard> get mainboard =>
       _deckCards.where((c) => c.board == DeckBoard.main).toList();
 
+  /// Cards on the sideboard of the selected deck.
   List<DeckCard> get sideboard =>
       _deckCards.where((c) => c.board == DeckBoard.side).toList();
 
@@ -54,9 +60,11 @@ class DeckStore extends ChangeNotifier {
   /// is set — used to filter which cards may be added to the deck.
   String? get commanderColorIdentity => commander?.colorIdentity;
 
+  /// Sums the quantities of [cards].
   int _sumQty(Iterable<DeckCard> cards) =>
       cards.fold(0, (s, c) => s + c.quantity);
 
+  // Card totals per board (by quantity), shown in the deck header.
   int get mainboardCount => _sumQty(mainboard);
   int get sideboardCount => _sumQty(sideboard);
   int get commanderCount => commander == null ? 0 : commander!.quantity;
@@ -101,6 +109,9 @@ class DeckStore extends ChangeNotifier {
   /// How many of [name] the user owns in their collection (any printing).
   int ownedCount(String name) => _owned[name.toLowerCase()] ?? 0;
 
+  /// Reloads the deck list, the selected deck's cards, and the collection
+  /// ownership map, keeping a valid selection, then notifies listeners. Every
+  /// mutator below ends by calling this.
   Future<void> load() async {
     _decks = await _db.getDecks();
     _deckCounts = await _db.deckCardCounts();
@@ -127,49 +138,58 @@ class DeckStore extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Selects a deck to view (or null for none) and reloads.
   Future<void> selectDeck(int? deckId) async {
     _selectedDeckId = deckId;
     await load();
   }
 
+  /// Creates a deck, selects it, and reloads.
   Future<void> createDeck(String name, {String? format}) async {
     final id = await _db.addDeck(name, format);
     _selectedDeckId = id;
     await load();
   }
 
+  /// Renames a deck and reloads.
   Future<void> renameDeck(int id, String name) async {
     await _db.renameDeck(id, name);
     await load();
   }
 
+  /// Sets (or clears, when null) a deck's format label and reloads.
   Future<void> setFormat(int id, String? format) async {
     await _db.setDeckFormat(id, format);
     await load();
   }
 
+  /// Deletes a deck (and its cards); clears the selection if it was selected.
   Future<void> deleteDeck(int id) async {
     if (_selectedDeckId == id) _selectedDeckId = null;
     await _db.deleteDeck(id);
     await load();
   }
 
+  /// Adds a card to the selected deck (merging into a matching entry).
   Future<void> addCard(DeckCard card) async {
     await _db.addOrMergeDeckCard(card);
     await load();
   }
 
+  /// Sets a deck card's quantity (ignored if less than 1).
   Future<void> setQuantity(int cardId, int quantity) async {
     if (quantity < 1) return;
     await _db.updateDeckCardQuantity(cardId, quantity);
     await load();
   }
 
+  /// Moves a deck card to another board (commander/main/side).
   Future<void> setBoard(int cardId, String board) async {
     await _db.setDeckCardBoard(cardId, board);
     await load();
   }
 
+  /// Removes a card from the selected deck.
   Future<void> removeCard(int cardId) async {
     await _db.removeDeckCard(cardId);
     await load();

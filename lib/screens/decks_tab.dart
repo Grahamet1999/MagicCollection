@@ -8,6 +8,7 @@ import '../services/scryfall_service.dart';
 import '../widgets/card_image.dart';
 import '../widgets/dialogs.dart';
 
+/// Selectable format labels for the deck's format dropdown.
 const List<String> _formats = [
   'Commander',
   'Standard',
@@ -33,12 +34,20 @@ class DecksTab extends StatefulWidget {
 }
 
 class _DecksTabState extends State<DecksTab> {
+  /// Scryfall client for the add-card search (owned by this tab).
   final _scryfall = ScryfallService();
   final _searchController = TextEditingController();
 
+  /// True while a Scryfall search is in flight.
   bool _loading = false;
+
+  /// Last search error message, or null.
   String? _error;
+
+  /// Raw Scryfall JSON results for the add panel.
   List<Map<String, dynamic>> _searchResults = [];
+
+  /// Which board added cards go to (main or side); commander is set separately.
   String _addBoard = DeckBoard.main;
 
   @override
@@ -48,6 +57,7 @@ class _DecksTabState extends State<DecksTab> {
     super.dispose();
   }
 
+  /// Shorthand for the deck store this tab renders.
   DeckStore get store => widget.store;
 
   @override
@@ -68,6 +78,8 @@ class _DecksTabState extends State<DecksTab> {
 
   // ---- Sidebar -------------------------------------------------------------
 
+  /// The left deck-list column: a "New deck" button and every deck with its
+  /// card count and a rename/delete menu.
   Widget _buildSidebar(BuildContext context) {
     return SizedBox(
       width: 240,
@@ -140,6 +152,9 @@ class _DecksTabState extends State<DecksTab> {
 
   // ---- Deck content --------------------------------------------------------
 
+  /// The right pane for the selected deck: header, stats, add panel, then the
+  /// commander / mainboard-by-type / sideboard sections. Prompts to create a
+  /// deck when none is selected.
   Widget _buildContent(BuildContext context) {
     final deck = store.selectedDeck;
     if (deck == null) {
@@ -193,8 +208,10 @@ class _DecksTabState extends State<DecksTab> {
     );
   }
 
+  /// Sums the quantities of [cards] (used for the per-type header counts).
   int _sum(List<DeckCard> cards) => cards.fold(0, (s, c) => s + c.quantity);
 
+  /// Deck name plus the format dropdown.
   Widget _buildHeader(BuildContext context, Deck deck) {
     return Row(
       children: [
@@ -220,6 +237,8 @@ class _DecksTabState extends State<DecksTab> {
     );
   }
 
+  /// Stats card: board counts, deck value, color pip breakdown, and the mana
+  /// curve chart.
   Widget _buildStats(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     return Card(
@@ -251,6 +270,7 @@ class _DecksTabState extends State<DecksTab> {
     );
   }
 
+  /// A single labeled statistic (label above value).
   Widget _stat(BuildContext context, String label, String value) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -262,6 +282,7 @@ class _DecksTabState extends State<DecksTab> {
     );
   }
 
+  /// Colored chips showing the pip count per color (omitting absent colors).
   Widget _colorBreakdown(BuildContext context) {
     const symbols = {
       'W': Color(0xFFF8F6D8),
@@ -289,6 +310,8 @@ class _DecksTabState extends State<DecksTab> {
     );
   }
 
+  /// A small bar chart of the CMC histogram (buckets 0..7, where 7 = 7+),
+  /// heights normalized to the tallest bar.
   Widget _manaCurve(BuildContext context, ColorScheme scheme) {
     final curve = store.manaCurve;
     final max = curve.values.fold(0, (m, v) => v > m ? v : m);
@@ -327,6 +350,9 @@ class _DecksTabState extends State<DecksTab> {
 
   // ---- Add panel -----------------------------------------------------------
 
+  /// The add-card panel: a Scryfall name search (auto-filtered to the
+  /// commander's color identity), a main/side target toggle, and tappable
+  /// results that add to the deck.
   Widget _buildAddPanel(BuildContext context) {
     final ci = store.commanderColorIdentity;
     return Card(
@@ -417,6 +443,7 @@ class _DecksTabState extends State<DecksTab> {
 
   // ---- Deck card row -------------------------------------------------------
 
+  /// A section title ("Commander"/"Mainboard"/"Sideboard") with its count.
   Widget _sectionHeader(BuildContext context, String label, int count) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 4),
@@ -432,6 +459,7 @@ class _DecksTabState extends State<DecksTab> {
     );
   }
 
+  /// A card-type subheading within the mainboard (e.g. "Creatures (12)").
   Widget _typeHeader(BuildContext context, String label, int count) {
     return Padding(
       padding: const EdgeInsets.only(top: 8, bottom: 2, left: 4),
@@ -443,6 +471,7 @@ class _DecksTabState extends State<DecksTab> {
     );
   }
 
+  /// A muted placeholder line shown for an empty board.
   Widget _emptyHint(BuildContext context, String text) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 8),
@@ -451,6 +480,9 @@ class _DecksTabState extends State<DecksTab> {
     );
   }
 
+  /// One card row: thumbnail, name/printing, an "owned in collection" badge
+  /// (green when you own enough copies), quantity steppers, and a board/remove
+  /// menu.
   Widget _deckCardRow(BuildContext context, DeckCard card) {
     final owned = store.ownedCount(card.name);
     final enough = owned >= card.quantity;
@@ -522,6 +554,7 @@ class _DecksTabState extends State<DecksTab> {
     );
   }
 
+  /// Handles the per-card menu: set commander, move board, or remove.
   void _onCardAction(BuildContext context, DeckCard card, String action) {
     switch (action) {
       case 'commander':
@@ -537,10 +570,14 @@ class _DecksTabState extends State<DecksTab> {
 
   // ---- Actions -------------------------------------------------------------
 
+  /// Extracts a thumbnail URL from a raw Scryfall result (deckId is irrelevant
+  /// here, so 0 is passed as a throwaway).
   String? _resultImage(Map<String, dynamic> json) {
     return DeckCard.fromScryfall(json, deckId: 0).imageUrl;
   }
 
+  /// Runs the Scryfall name search, filtered to the commander's color identity,
+  /// and populates [_searchResults].
   Future<void> _search() async {
     final q = _searchController.text.trim();
     if (q.isEmpty) return;
@@ -565,6 +602,7 @@ class _DecksTabState extends State<DecksTab> {
     }
   }
 
+  /// Adds a searched card to the selected deck on the current [_addBoard].
   Future<void> _addResult(Map<String, dynamic> json) async {
     final deckId = store.selectedDeckId;
     if (deckId == null) return;
@@ -579,12 +617,14 @@ class _DecksTabState extends State<DecksTab> {
     );
   }
 
+  /// Prompts for a name and creates a new deck.
   Future<void> _createDeck(BuildContext context) async {
     final name = await promptForName(context,
         title: 'New deck', label: 'Deck name');
     if (name != null && name.isNotEmpty) await store.createDeck(name);
   }
 
+  /// Prompts for a new name and renames [deck].
   Future<void> _renameDeck(BuildContext context, Deck deck) async {
     final name = await promptForName(context,
         title: 'Rename deck', label: 'Deck name', initial: deck.name);
@@ -593,6 +633,7 @@ class _DecksTabState extends State<DecksTab> {
     }
   }
 
+  /// Confirms and deletes [deck] (and its cards; collection is unaffected).
   Future<void> _deleteDeck(BuildContext context, Deck deck) async {
     final confirmed = await showDialog<bool>(
       context: context,

@@ -11,18 +11,43 @@ class DeckBoard {
 /// the collection (adding to a deck never touches collection quantities), plus
 /// the fields needed for grouping, the mana curve, and the commander filter.
 class DeckCard {
+  /// SQLite primary key. Null until the row has been inserted.
   final int? id;
+
+  /// Foreign key to the owning [Deck].
   final int deckId;
+
+  /// Card name.
   final String name;
+
+  /// Set code, e.g. "NEO".
   final String setCode;
+
+  /// Collector number within the set.
   final String collectorNumber;
+
+  /// Whether this is the foil printing.
   final bool foil;
+
+  /// Number of copies of this card on this board.
   final int quantity;
+
+  /// Scryfall image URL, if known.
   final String? imageUrl;
+
+  /// USD price snapshot for the printing, if known.
   final double? priceUsd;
+
+  /// Colors in WUBRG order ("" = colorless).
   final String colors;
+
+  /// Color identity in WUBRG order, used by the commander color-identity filter.
   final String colorIdentity;
+
+  /// Converted mana cost / mana value, used to build the mana curve.
   final double cmc;
+
+  /// Full type line, e.g. "Legendary Creature — Elf Druid", used for grouping.
   final String typeLine;
 
   /// One of [DeckBoard.commander] / [DeckBoard.main] / [DeckBoard.side].
@@ -45,8 +70,10 @@ class DeckCard {
     this.board = DeckBoard.main,
   });
 
+  /// The grouping bucket (Creatures, Lands, …) derived from [typeLine].
   sf.CardType get primaryType => sf.primaryType(typeLine);
 
+  /// Returns a copy with the given fields replaced (all optional).
   DeckCard copyWith({
     int? id,
     int? deckId,
@@ -81,6 +108,8 @@ class DeckCard {
     );
   }
 
+  /// Serializes to a row map for the `deck_cards` table. Booleans are stored as
+  /// 0/1 integers to match SQLite's type affinity.
   Map<String, Object?> toMap() {
     return {
       'id': id,
@@ -100,6 +129,7 @@ class DeckCard {
     };
   }
 
+  /// Rebuilds a [DeckCard] from a `deck_cards` table row.
   factory DeckCard.fromMap(Map<String, Object?> map) {
     return DeckCard(
       id: map['id'] as int?,
