@@ -1,8 +1,14 @@
+import 'dart:io';
+
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
 import '../models/deck.dart';
 import '../models/deck_card.dart';
 import '../models/scryfall_parse.dart';
+import '../services/database_service.dart';
+import '../services/deck_csv_export_service.dart';
+import '../services/deck_csv_import_service.dart';
 import '../services/deck_store.dart';
 import '../services/scryfall_service.dart';
 import '../widgets/card_image.dart';
@@ -21,6 +27,39 @@ const List<String> _formats = [
   'Freeform',
 ];
 
+/// How the mainboard card list is split into sections.
+enum _GroupBy {
+  type,
+  color,
+  manaValue,
+  none;
+
+  String get label => switch (this) {
+        _GroupBy.type => 'Type',
+        _GroupBy.color => 'Color',
+        _GroupBy.manaValue => 'Mana value',
+        _GroupBy.none => 'None',
+      };
+}
+
+/// How cards are ordered within each section.
+enum _SortBy {
+  name,
+  manaValue,
+  price,
+  quantity;
+
+  String get label => switch (this) {
+        _SortBy.name => 'Name',
+        _SortBy.manaValue => 'Mana value',
+        _SortBy.price => 'Price',
+        _SortBy.quantity => 'Quantity',
+      };
+}
+
+/// A labeled, ordered section of deck cards produced by the grouping.
+typedef _CardGroup = ({String label, List<DeckCard> cards});
+
 /// Deck-building tab: a deck list sidebar plus the selected deck's contents
 /// (commander, mainboard grouped by type, sideboard), stats, mana curve, and a
 /// Scryfall add panel filtered to the commander's color identity.
@@ -37,9 +76,16 @@ class _DecksTabState extends State<DecksTab> {
   /// Scryfall client for the add-card search (owned by this tab).
   final _scryfall = ScryfallService();
   final _searchController = TextEditingController();
+  final _searchFocus = FocusNode();
+
+  /// Whether the add-card search is expanded (vs. collapsed to a search icon).
+  bool _searchExpanded = false;
 
   /// True while a Scryfall search is in flight.
   bool _loading = false;
+
+  /// True while a CSV deck import is running.
+  bool _importing = false;
 
   /// Last search error message, or null.
   String? _error;
@@ -50,11 +96,36 @@ class _DecksTabState extends State<DecksTab> {
   /// Which board added cards go to (main or side); commander is set separately.
   String _addBoard = DeckBoard.main;
 
+  /// How the mainboard is grouped into sections (defaults to card type).
+  _GroupBy _groupBy = _GroupBy.type;
+
+  /// How cards are ordered within each section (defaults to name).
+  _SortBy _sortBy = _SortBy.name;
+
   @override
   void dispose() {
     _scryfall.dispose();
     _searchController.dispose();
+    _searchFocus.dispose();
     super.dispose();
+  }
+
+  /// Expands the add-card search and focuses the field.
+  void _openSearch() {
+    setState(() => _searchExpanded = true);
+    WidgetsBinding.instance
+        .addPostFrameCallback((_) => _searchFocus.requestFocus());
+  }
+
+  /// Collapses the add-card search back to the icon, clearing stale results.
+  void _closeSearch() {
+    if (!_searchExpanded) return;
+    _searchFocus.unfocus();
+    setState(() {
+      _searchExpanded = false;
+      _searchResults = [];
+      _error = null;
+    });
   }
 
   /// Shorthand for the deck store this tab renders.
@@ -183,7 +254,7 @@ class _DecksTabState extends State<DecksTab> {
         const SizedBox(height: 12),
         _buildStats(context),
         const SizedBox(height: 12),
-        _buildAddPanel(context),
+        _buildAddSection(context),
         const SizedBox(height: 16),
         if (store.commander != null) ...[
           _sectionHeader(context, 'Commander', store.commanderCount),
@@ -193,23 +264,164 @@ class _DecksTabState extends State<DecksTab> {
         _sectionHeader(context, 'Mainboard', store.mainboardCount),
         if (store.mainboard.isEmpty)
           _emptyHint(context, 'No mainboard cards yet — add some above.')
-        else
-          for (final entry in store.mainboardByType.entries) ...[
-            _typeHeader(context, entry.key.label, _sum(entry.value)),
-            for (final card in entry.value) _deckCardRow(context, card),
+        else ...[
+          _buildViewControls(context),
+          for (final group in _groupCards(store.mainboard)) ...[
+            if (_groupBy != _GroupBy.none)
+              _typeHeader(context, group.label, _sum(group.cards)),
+            for (final card in group.cards) _deckCardRow(context, card),
           ],
+        ],
         const SizedBox(height: 16),
         _sectionHeader(context, 'Sideboard', store.sideboardCount),
         if (store.sideboard.isEmpty)
           _emptyHint(context, 'No sideboard cards.')
         else
-          for (final card in store.sideboard) _deckCardRow(context, card),
+          for (final card in [...store.sideboard]..sort(_cardComparator))
+            _deckCardRow(context, card),
       ],
     );
   }
 
   /// Sums the quantities of [cards] (used for the per-type header counts).
   int _sum(List<DeckCard> cards) => cards.fold(0, (s, c) => s + c.quantity);
+
+  /// Group-by / sort-by dropdowns controlling how the mainboard is displayed.
+  Widget _buildViewControls(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 4),
+      child: Row(
+        children: [
+          Text('Group:', style: Theme.of(context).textTheme.bodySmall),
+          const SizedBox(width: 6),
+          DropdownButton<_GroupBy>(
+            value: _groupBy,
+            isDense: true,
+            items: [
+              for (final g in _GroupBy.values)
+                DropdownMenuItem(value: g, child: Text(g.label)),
+            ],
+            onChanged: (g) {
+              if (g != null) setState(() => _groupBy = g);
+            },
+          ),
+          const SizedBox(width: 20),
+          Text('Sort:', style: Theme.of(context).textTheme.bodySmall),
+          const SizedBox(width: 6),
+          DropdownButton<_SortBy>(
+            value: _sortBy,
+            isDense: true,
+            items: [
+              for (final s in _SortBy.values)
+                DropdownMenuItem(value: s, child: Text(s.label)),
+            ],
+            onChanged: (s) {
+              if (s != null) setState(() => _sortBy = s);
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Comparator for the current sort mode; every mode breaks ties by name.
+  int _cardComparator(DeckCard a, DeckCard b) {
+    int byName() => a.name.toLowerCase().compareTo(b.name.toLowerCase());
+    switch (_sortBy) {
+      case _SortBy.name:
+        return byName();
+      case _SortBy.manaValue:
+        final c = a.cmc.compareTo(b.cmc);
+        return c != 0 ? c : byName();
+      case _SortBy.price:
+        final c = (b.priceUsd ?? 0).compareTo(a.priceUsd ?? 0);
+        return c != 0 ? c : byName();
+      case _SortBy.quantity:
+        final c = b.quantity.compareTo(a.quantity);
+        return c != 0 ? c : byName();
+    }
+  }
+
+  /// Splits [cards] into ordered, labeled sections per the current grouping,
+  /// each internally sorted by the current sort mode. Empty sections omitted.
+  List<_CardGroup> _groupCards(List<DeckCard> cards) {
+    final sorted = [...cards]..sort(_cardComparator);
+    switch (_groupBy) {
+      case _GroupBy.none:
+        return [(label: 'All', cards: sorted)];
+      case _GroupBy.type:
+        return [
+          for (final type in CardType.values)
+            if (sorted.any((c) => c.primaryType == type))
+              (
+                label: type.label,
+                cards: sorted.where((c) => c.primaryType == type).toList(),
+              ),
+        ];
+      case _GroupBy.color:
+        return _bucketed(sorted, _colorBucketOrder, _colorBucket);
+      case _GroupBy.manaValue:
+        return _bucketed(sorted, _manaBucketOrder, _manaBucket);
+    }
+  }
+
+  /// Buckets [sorted] by [keyOf], emitting sections in the given [order] and
+  /// skipping any bucket with no cards.
+  List<_CardGroup> _bucketed(
+    List<DeckCard> sorted,
+    List<String> order,
+    String Function(DeckCard) keyOf,
+  ) {
+    final map = <String, List<DeckCard>>{};
+    for (final c in sorted) {
+      (map[keyOf(c)] ??= []).add(c);
+    }
+    return [
+      for (final key in order)
+        if (map[key] != null) (label: key, cards: map[key]!),
+    ];
+  }
+
+  static const _colorBucketOrder = [
+    'White',
+    'Blue',
+    'Black',
+    'Red',
+    'Green',
+    'Multicolor',
+    'Colorless',
+  ];
+
+  /// The color section a card belongs to (mono colors, Multicolor, Colorless).
+  String _colorBucket(DeckCard c) {
+    if (c.colors.isEmpty) return 'Colorless';
+    if (c.colors.length > 1) return 'Multicolor';
+    return switch (c.colors) {
+      'W' => 'White',
+      'U' => 'Blue',
+      'B' => 'Black',
+      'R' => 'Red',
+      'G' => 'Green',
+      _ => 'Colorless',
+    };
+  }
+
+  static const _manaBucketOrder = [
+    'MV 0',
+    'MV 1',
+    'MV 2',
+    'MV 3',
+    'MV 4',
+    'MV 5',
+    'MV 6',
+    'MV 7+',
+  ];
+
+  /// The mana-value section a card belongs to (buckets 0..7, where 7 = 7+).
+  String _manaBucket(DeckCard c) {
+    final v = c.cmc >= 7 ? 7 : c.cmc.floor();
+    return v == 7 ? 'MV 7+' : 'MV $v';
+  }
 
   /// Deck name plus the format dropdown.
   Widget _buildHeader(BuildContext context, Deck deck) {
@@ -221,6 +433,25 @@ class _DecksTabState extends State<DecksTab> {
               overflow: TextOverflow.ellipsis),
         ),
         const SizedBox(width: 12),
+        Tooltip(
+          message: 'CSV columns: name, or set + collector number (required); '
+              'optional quantity, foil, board (main/side/commander).',
+          child: OutlinedButton.icon(
+            onPressed: _importing ? null : () => _importDeckCsv(deck.id!),
+            icon: const Icon(Icons.upload_file),
+            label: Text(_importing ? 'Importing…' : 'Import CSV'),
+          ),
+        ),
+        const SizedBox(width: 8),
+        Tooltip(
+          message: 'Export this deck to a CSV the importer can read back.',
+          child: OutlinedButton.icon(
+            onPressed: () => _exportDeckCsv(deck),
+            icon: const Icon(Icons.download),
+            label: const Text('Export CSV'),
+          ),
+        ),
+        const SizedBox(width: 16),
         const Text('Format:'),
         const SizedBox(width: 8),
         DropdownButton<String?>(
@@ -315,40 +546,65 @@ class _DecksTabState extends State<DecksTab> {
   Widget _manaCurve(BuildContext context, ColorScheme scheme) {
     final curve = store.manaCurve;
     final max = curve.values.fold(0, (m, v) => v > m ? v : m);
-    return SizedBox(
-      height: 70,
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.end,
-        children: [
-          for (var i = 0; i <= 7; i++)
-            Expanded(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.end,
-                children: [
-                  Text('${curve[i] ?? 0}',
-                      style: Theme.of(context).textTheme.labelSmall),
-                  Container(
-                    margin: const EdgeInsets.symmetric(horizontal: 3),
-                    height: max == 0
-                        ? 2
-                        : 4 + 44 * (curve[i] ?? 0) / max,
-                    decoration: BoxDecoration(
-                      color: scheme.primary,
-                      borderRadius: BorderRadius.circular(3),
-                    ),
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.end,
+      children: [
+        for (var i = 0; i <= 7; i++)
+          Expanded(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // Fixed-height, bottom-anchored area for the value + bar so
+                // every bar rests on the same baseline regardless of height.
+                SizedBox(
+                  height: 64,
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      Text('${curve[i] ?? 0}',
+                          style: Theme.of(context).textTheme.labelSmall),
+                      Container(
+                        margin: const EdgeInsets.symmetric(horizontal: 3),
+                        height: max == 0 ? 2 : 4 + 44 * (curve[i] ?? 0) / max,
+                        decoration: BoxDecoration(
+                          color: scheme.primary,
+                          borderRadius: BorderRadius.circular(3),
+                        ),
+                      ),
+                    ],
                   ),
-                  const SizedBox(height: 2),
-                  Text(i == 7 ? '7+' : '$i',
-                      style: Theme.of(context).textTheme.labelSmall),
-                ],
-              ),
+                ),
+                const SizedBox(height: 2),
+                Text(i == 7 ? '7+' : '$i',
+                    style: Theme.of(context).textTheme.labelSmall),
+              ],
             ),
-        ],
-      ),
+          ),
+      ],
     );
   }
 
   // ---- Add panel -----------------------------------------------------------
+
+  /// The add-card area: a magnifying-glass button when collapsed, or the full
+  /// search panel when expanded. The expanded panel collapses when the user
+  /// taps outside it (taps on the results or toggle keep it open).
+  Widget _buildAddSection(BuildContext context) {
+    if (!_searchExpanded) {
+      return Align(
+        alignment: Alignment.centerLeft,
+        child: IconButton.filledTonal(
+          tooltip: 'Add cards — search by name',
+          icon: const Icon(Icons.search),
+          onPressed: _openSearch,
+        ),
+      );
+    }
+    return TapRegion(
+      onTapOutside: (_) => _closeSearch(),
+      child: _buildAddPanel(context),
+    );
+  }
 
   /// The add-card panel: a Scryfall name search (auto-filtered to the
   /// commander's color identity), a main/side target toggle, and tappable
@@ -366,6 +622,7 @@ class _DecksTabState extends State<DecksTab> {
                 Expanded(
                   child: TextField(
                     controller: _searchController,
+                    focusNode: _searchFocus,
                     decoration: const InputDecoration(
                       labelText: 'Add cards — search by name',
                       prefixIcon: Icon(Icons.search),
@@ -569,6 +826,124 @@ class _DecksTabState extends State<DecksTab> {
   }
 
   // ---- Actions -------------------------------------------------------------
+
+  /// Prompts for a CSV file, imports its rows into the deck with [deckId] via
+  /// [DeckCsvImportService], reloads the store, and shows a summary dialog.
+  Future<void> _importDeckCsv(int deckId) async {
+    final picked = await FilePicker.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: ['csv'],
+      withData: true,
+      dialogTitle: 'Choose a deck CSV to import',
+    );
+    if (picked == null || picked.files.isEmpty) return; // cancelled
+
+    final bytes = picked.files.single.bytes;
+    if (bytes == null) {
+      _showSnack('Could not read the selected file.');
+      return;
+    }
+
+    setState(() => _importing = true);
+    try {
+      final service =
+          DeckCsvImportService(DatabaseService.instance, _scryfall);
+      final result = await service.importFromBytes(bytes, deckId: deckId);
+      await store.load();
+      if (mounted) _showDeckImportSummary(result);
+    } catch (e) {
+      if (mounted) _showSnack('Import failed: $e');
+    } finally {
+      if (mounted) setState(() => _importing = false);
+    }
+  }
+
+  /// Shows the post-import dialog: how many cards were added, rows skipped, and
+  /// the identifiers Scryfall couldn't match.
+  void _showDeckImportSummary(DeckCsvImportResult result) {
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Deck CSV import complete'),
+        content: SizedBox(
+          width: 460,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Added ${result.copies} '
+                  'card${result.copies == 1 ? '' : 's'} '
+                  '(${result.imported} '
+                  'entr${result.imported == 1 ? 'y' : 'ies'}) to this deck.'),
+              if (result.skipped > 0)
+                Padding(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: Text(
+                    '${result.skipped} row${result.skipped == 1 ? '' : 's'} '
+                    'skipped (no card identifier).',
+                  ),
+                ),
+              if (result.notFound.isNotEmpty) ...[
+                const SizedBox(height: 12),
+                Text(
+                  "Couldn't match ${result.notFound.length} on Scryfall:",
+                  style: Theme.of(context).textTheme.titleSmall,
+                ),
+                const SizedBox(height: 4),
+                Flexible(
+                  child: SingleChildScrollView(
+                    child: SelectableText(result.notFound.join('\n')),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Done'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Exports [deck]'s cards to a CSV file the deck importer can read back.
+  Future<void> _exportDeckCsv(Deck deck) async {
+    final cards = store.allCards;
+    if (cards.isEmpty) {
+      _showSnack('This deck has no cards to export.');
+      return;
+    }
+    final csv = DeckCsvExportService.standard(cards);
+
+    // A filesystem-safe default filename derived from the deck name.
+    final safeName = deck.name.trim().isEmpty
+        ? 'deck'
+        : deck.name.trim().replaceAll(RegExp(r'[^A-Za-z0-9._ -]'), '_');
+    final path = await FilePicker.saveFile(
+      dialogTitle: 'Export deck',
+      fileName: '$safeName.csv',
+      type: FileType.custom,
+      allowedExtensions: ['csv'],
+    );
+    if (path == null) return; // cancelled
+    final finalPath = path.toLowerCase().endsWith('.csv') ? path : '$path.csv';
+
+    try {
+      await File(finalPath).writeAsString(csv);
+      _showSnack('Exported ${cards.length} cards to $finalPath');
+    } catch (e) {
+      _showSnack('Export failed: $e');
+    }
+  }
+
+  /// Shows a brief SnackBar message.
+  void _showSnack(String message) {
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(message)));
+  }
 
   /// Extracts a thumbnail URL from a raw Scryfall result (deckId is irrelevant
   /// here, so 0 is passed as a throwaway).

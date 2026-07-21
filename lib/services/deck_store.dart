@@ -48,6 +48,9 @@ class DeckStore extends ChangeNotifier {
     return null;
   }
 
+  /// Every card in the selected deck, across all boards.
+  List<DeckCard> get allCards => List.unmodifiable(_deckCards);
+
   /// Cards on the mainboard of the selected deck.
   List<DeckCard> get mainboard =>
       _deckCards.where((c) => c.board == DeckBoard.main).toList();
@@ -72,17 +75,6 @@ class DeckStore extends ChangeNotifier {
   /// Total USD value across every board.
   double get deckValue =>
       _deckCards.fold(0.0, (s, c) => s + (c.priceUsd ?? 0) * c.quantity);
-
-  /// Mainboard (+ commander) grouped by primary card type, in display order,
-  /// with empty groups omitted. The commander is excluded (own section).
-  Map<CardType, List<DeckCard>> get mainboardByType {
-    final grouped = <CardType, List<DeckCard>>{};
-    for (final type in CardType.values) {
-      final cards = mainboard.where((c) => c.primaryType == type).toList();
-      if (cards.isNotEmpty) grouped[type] = cards;
-    }
-    return grouped;
-  }
 
   /// Pip counts per color across mainboard + commander (by quantity).
   Map<String, int> get colorBreakdown {
