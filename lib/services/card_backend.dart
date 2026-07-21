@@ -24,6 +24,18 @@ abstract class CardBackend {
   /// Stores the latest USD [price] for the card with [id].
   Future<void> setCardPrice(int id, double price);
 
+  /// Backfills the Scryfall-derived detail fields (type line, mana value, oracle
+  /// text) used by the collection's advanced search.
+  Future<void> setCardDetails(
+    int id, {
+    required String typeLine,
+    required double? cmc,
+    required String oracleText,
+  });
+
+  /// Distinct set codes present in the collection, sorted, for the set filter.
+  Future<List<String>> distinctSetCodes();
+
   /// Replaces the trade [tags] on the card with [id].
   Future<void> setCardTags(int id, List<String> tags);
 

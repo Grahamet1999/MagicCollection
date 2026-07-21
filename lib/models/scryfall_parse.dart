@@ -44,6 +44,21 @@ String typeLineFromScryfall(Map<String, dynamic> json) {
   return '';
 }
 
+/// Oracle rules text. Joins both faces for double-faced cards (separated by a
+/// newline) so a text search matches either side. Empty string when absent.
+String oracleTextFromScryfall(Map<String, dynamic> json) {
+  final t = json['oracle_text'] as String?;
+  if (t != null && t.isNotEmpty) return t;
+  final faces = json['card_faces'] as List<dynamic>?;
+  if (faces != null && faces.isNotEmpty) {
+    return faces
+        .map((f) => (f as Map<String, dynamic>)['oracle_text'] as String? ?? '')
+        .where((s) => s.isNotEmpty)
+        .join('\n');
+  }
+  return '';
+}
+
 /// Best available card image URL, preferring `normal` then `large` then
 /// `small`. Falls back to the front face's images for double-faced cards.
 String? imageUrlFromScryfall(Map<String, dynamic> json) {

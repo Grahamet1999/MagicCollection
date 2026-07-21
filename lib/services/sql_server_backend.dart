@@ -75,6 +75,18 @@ class SqlServerBackend implements CardBackend {
       "IF COL_LENGTH('dbo.cards', 'tags') IS NULL "
       'ALTER TABLE dbo.cards ADD tags NVARCHAR(1000) NULL',
     );
+    await odbc.execute(
+      "IF COL_LENGTH('dbo.cards', 'type_line') IS NULL "
+      'ALTER TABLE dbo.cards ADD type_line NVARCHAR(255) NULL',
+    );
+    await odbc.execute(
+      "IF COL_LENGTH('dbo.cards', 'cmc') IS NULL "
+      'ALTER TABLE dbo.cards ADD cmc DECIMAL(6,2) NULL',
+    );
+    await odbc.execute(
+      "IF COL_LENGTH('dbo.cards', 'oracle_text') IS NULL "
+      'ALTER TABLE dbo.cards ADD oracle_text NVARCHAR(MAX) NULL',
+    );
   }
 
   /// Creates the folders/cards/decks/deck_cards tables if they don't yet exist.
@@ -103,6 +115,9 @@ class SqlServerBackend implements CardBackend {
         colors           NVARCHAR(10) NULL,
         color_identity   NVARCHAR(10) NULL,
         tags             NVARCHAR(1000) NULL,
+        type_line        NVARCHAR(255) NULL,
+        cmc              DECIMAL(6,2) NULL,
+        oracle_text      NVARCHAR(MAX) NULL,
         CONSTRAINT FK_cards_folder FOREIGN KEY (folder_id)
           REFERENCES dbo.folders (id) ON DELETE SET NULL
       )
@@ -144,12 +159,13 @@ class SqlServerBackend implements CardBackend {
   Future<int> addCard(MtgCard card) async {
     final rows = await _db.execute(
       'INSERT INTO dbo.cards '
-      '(name, set_code, collector_number, foil, quantity, image_url, price_usd, folder_id, colors, color_identity, tags) '
+      '(name, set_code, collector_number, foil, quantity, image_url, price_usd, folder_id, colors, color_identity, tags, type_line, cmc, oracle_text) '
       'OUTPUT INSERTED.id AS id VALUES ('
       '${_lit(card.name)}, ${_lit(card.setCode)}, ${_lit(card.collectorNumber)}, '
       '${_lit(card.foil)}, ${_lit(card.quantity)}, ${_lit(card.imageUrl)}, '
       '${_lit(card.priceUsd)}, ${_lit(card.folderId)}, ${_lit(card.colors)}, '
-      '${_lit(card.colorIdentity)}, ${_lit(MtgCard.encodeTags(card.tags))})',
+      '${_lit(card.colorIdentity)}, ${_lit(MtgCard.encodeTags(card.tags))}, '
+      '${_lit(card.typeLine)}, ${_lit(card.cmc)}, ${_lit(card.oracleText)})',
     );
     return _asInt(rows.isNotEmpty ? rows.first['id'] : null) ?? -1;
   }
@@ -182,6 +198,28 @@ class SqlServerBackend implements CardBackend {
     await _db.execute(
       'UPDATE dbo.cards SET price_usd = ${_lit(price)} WHERE id = ${_lit(id)}',
     );
+  }
+
+  @override
+  Future<void> setCardDetails(
+    int id, {
+    required String typeLine,
+    required double? cmc,
+    required String oracleText,
+  }) async {
+    await _db.execute(
+      'UPDATE dbo.cards SET type_line = ${_lit(typeLine)}, '
+      'cmc = ${_lit(cmc)}, oracle_text = ${_lit(oracleText)} '
+      'WHERE id = ${_lit(id)}',
+    );
+  }
+
+  @override
+  Future<List<String>> distinctSetCodes() async {
+    final rows = await _db.execute(
+      'SELECT DISTINCT set_code FROM dbo.cards ORDER BY set_code',
+    );
+    return rows.map((r) => r['set_code'] as String).toList();
   }
 
   @override
@@ -292,7 +330,8 @@ class SqlServerBackend implements CardBackend {
     final rows = await _db.execute(
       'SELECT id, name, set_code, collector_number, '
       'CAST(foil AS INT) AS foil, quantity, '
-      'image_url, price_usd, folder_id, colors, color_identity, tags '
+      'image_url, price_usd, folder_id, colors, color_identity, tags, '
+      'type_line, cmc, oracle_text '
       'FROM dbo.cards $clause ORDER BY ${_orderBy(sort, ascending)}',
     );
     return rows.map(_cardFromRow).toList();
@@ -564,6 +603,9 @@ class SqlServerBackend implements CardBackend {
       colors: r['colors'] as String? ?? '',
       colorIdentity: r['color_identity'] as String? ?? '',
       tags: MtgCard.decodeTags(r['tags']),
+      typeLine: r['type_line'] as String? ?? '',
+      cmc: _asDouble(r['cmc']),
+      oracleText: r['oracle_text'] as String? ?? '',
     );
   }
 

@@ -46,6 +46,18 @@ class MtgCard {
   /// Free-form trade tags, e.g. ["Trade", "Want", "Keep"].
   final List<String> tags;
 
+  /// Full type line, e.g. "Legendary Creature — Elf Druid". Backfilled from
+  /// Scryfall to power the advanced type/subtype search; "" = not yet known.
+  final String typeLine;
+
+  /// Converted mana cost / mana value, backfilled from Scryfall for the advanced
+  /// mana-value filter. Null = not yet known.
+  final double? cmc;
+
+  /// Oracle rules text, backfilled from Scryfall for the advanced rules-text
+  /// search; "" = not yet known (or genuinely no text).
+  final String oracleText;
+
   const MtgCard({
     this.id,
     required this.name,
@@ -59,6 +71,9 @@ class MtgCard {
     this.colors = '',
     this.colorIdentity = '',
     this.tags = const [],
+    this.typeLine = '',
+    this.cmc,
+    this.oracleText = '',
   });
 
   MtgCard copyWith({
@@ -73,6 +88,9 @@ class MtgCard {
     String? colors,
     String? colorIdentity,
     List<String>? tags,
+    String? typeLine,
+    double? cmc,
+    String? oracleText,
     // Use a sentinel so callers can explicitly clear the folder (set to null).
     Object? folderId = _noChange,
   }) {
@@ -88,6 +106,9 @@ class MtgCard {
       colors: colors ?? this.colors,
       colorIdentity: colorIdentity ?? this.colorIdentity,
       tags: tags ?? this.tags,
+      typeLine: typeLine ?? this.typeLine,
+      cmc: cmc ?? this.cmc,
+      oracleText: oracleText ?? this.oracleText,
       folderId: folderId == _noChange ? this.folderId : folderId as int?,
     );
   }
@@ -147,6 +168,9 @@ class MtgCard {
       'colors': colors,
       'color_identity': colorIdentity,
       'tags': encodeTags(tags),
+      'type_line': typeLine,
+      'cmc': cmc,
+      'oracle_text': oracleText,
     };
   }
 
@@ -165,6 +189,9 @@ class MtgCard {
       colors: map['colors'] as String? ?? '',
       colorIdentity: map['color_identity'] as String? ?? '',
       tags: decodeTags(map['tags']),
+      typeLine: map['type_line'] as String? ?? '',
+      cmc: (map['cmc'] as num?)?.toDouble(),
+      oracleText: map['oracle_text'] as String? ?? '',
     );
   }
 
@@ -185,6 +212,9 @@ class MtgCard {
       priceUsd: sf.priceFromScryfall(json, foil),
       colors: sf.colorsFromScryfall(json),
       colorIdentity: sf.colorIdentityFromScryfall(json),
+      typeLine: sf.typeLineFromScryfall(json),
+      cmc: sf.cmcFromScryfall(json),
+      oracleText: sf.oracleTextFromScryfall(json),
     );
   }
 }

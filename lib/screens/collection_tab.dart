@@ -27,6 +27,26 @@ class CollectionTab extends StatefulWidget {
 class _CollectionTabState extends State<CollectionTab> {
   final _searchController = TextEditingController();
 
+  // Advanced-search controllers.
+  final _typeController = TextEditingController();
+  final _textController = TextEditingController();
+  final _textFocus = FocusNode();
+  final _cmcMinController = TextEditingController();
+  final _cmcMaxController = TextEditingController();
+
+  /// Whether the advanced-search panel is expanded.
+  bool _advancedOpen = false;
+
+  /// True while the one-time Scryfall detail backfill runs.
+  bool _backfilling = false;
+
+  /// Backfill progress: printings resolved so far, and the total to resolve.
+  int _backfillDone = 0;
+  int _backfillTotal = 0;
+
+  /// Ensures the backfill is only auto-triggered once per tab lifetime.
+  bool _triedBackfill = false;
+
   /// Multi-select state for bulk actions like moving cards into a folder.
   bool _selectionMode = false;
   final Set<int> _selected = {};
@@ -38,13 +58,92 @@ class _CollectionTabState extends State<CollectionTab> {
   void initState() {
     super.initState();
     _searchController.text = widget.store.query;
+    _typeController.text = widget.store.typeQuery;
+    _textController.text = widget.store.textQuery;
+    _cmcMinController.text = widget.store.cmcMin?.toString() ?? '';
+    _cmcMaxController.text = widget.store.cmcMax?.toString() ?? '';
     _activeFolder = widget.store.selectedFolderId;
   }
 
   @override
   void dispose() {
     _searchController.dispose();
+    _typeController.dispose();
+    _textController.dispose();
+    _textFocus.dispose();
+    _cmcMinController.dispose();
+    _cmcMaxController.dispose();
     super.dispose();
+  }
+
+  /// Inserts [token] (e.g. "{T}") into the rules-text field at the caret,
+  /// keeps focus, and applies the updated filter.
+  void _insertToken(String token) {
+    final text = _textController.text;
+    final sel = _textController.selection;
+    final start = sel.start >= 0 ? sel.start : text.length;
+    final end = sel.end >= 0 ? sel.end : text.length;
+    final newText = text.replaceRange(start, end, token);
+    _textController.value = TextEditingValue(
+      text: newText,
+      selection: TextSelection.collapsed(offset: start + token.length),
+    );
+    _textFocus.requestFocus();
+    widget.store.setTextQuery(newText);
+  }
+
+  /// Toggles the advanced panel; on first open, backfills missing card details.
+  void _toggleAdvanced() {
+    setState(() => _advancedOpen = !_advancedOpen);
+    if (_advancedOpen && !_triedBackfill) {
+      _triedBackfill = true;
+      _runBackfillIfNeeded();
+    }
+  }
+
+  /// Fetches type/mana value/oracle text for any cards missing them so the
+  /// type, mana-value, and rules-text filters work on the existing collection.
+  Future<void> _runBackfillIfNeeded() async {
+    setState(() {
+      _backfilling = true;
+      _backfillDone = 0;
+      _backfillTotal = 0;
+    });
+    try {
+      final result = await widget.store.backfillCardDetails(
+        onProgress: (done, total) {
+          if (mounted) {
+            setState(() {
+              _backfillDone = done;
+              _backfillTotal = total;
+            });
+          }
+        },
+      );
+      if (mounted && result.updated > 0) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Fetched details for ${result.updated} card'
+                '${result.updated == 1 ? '' : 's'}.'),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not fetch card details: $e')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _backfilling = false);
+    }
+  }
+
+  /// Reads the mana-value min/max fields and applies them to the store.
+  void _applyCmc() {
+    final min = int.tryParse(_cmcMinController.text.trim());
+    final max = int.tryParse(_cmcMaxController.text.trim());
+    widget.store.setCmcRange(min, max);
   }
 
   /// Toggles whether [cardId] is in the multi-select set.
@@ -185,6 +284,8 @@ class _CollectionTabState extends State<CollectionTab> {
               _buildSortControl(context, store),
               const SizedBox(width: 8),
               _buildTagFilter(context, store),
+              const SizedBox(width: 8),
+              _buildAdvancedToggle(context, store),
               const SizedBox(width: 16),
               Text(
                 _countLabel(store),
@@ -210,6 +311,29 @@ class _CollectionTabState extends State<CollectionTab> {
             ],
           ),
         ),
+        if (_advancedOpen) _buildAdvancedPanel(context, store),
+        if (_backfilling)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  _backfillTotal > 0
+                      ? 'Fetching card details from Scryfall… '
+                          '$_backfillDone / $_backfillTotal'
+                      : 'Fetching card details from Scryfall…',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+                const SizedBox(height: 4),
+                LinearProgressIndicator(
+                  value: _backfillTotal > 0
+                      ? _backfillDone / _backfillTotal
+                      : null,
+                ),
+              ],
+            ),
+          ),
         if (_selectionMode && !store.isAggregated)
           _buildSelectionBar(context, store),
         Expanded(child: _buildGrid(context, store)),
@@ -252,7 +376,7 @@ class _CollectionTabState extends State<CollectionTab> {
     if (isEmpty) {
       return Center(
         child: Text(
-          store.query.isNotEmpty
+          store.query.isNotEmpty || store.hasAdvancedFilters
               ? 'No cards match your search.'
               : 'No cards here yet. Add some from the Import tab.',
           style: TextStyle(color: Theme.of(context).colorScheme.outline),
@@ -391,6 +515,253 @@ class _CollectionTabState extends State<CollectionTab> {
           ],
         ),
       ),
+    );
+  }
+
+  /// The Advanced-search toggle button, highlighted when any filter is active.
+  Widget _buildAdvancedToggle(BuildContext context, CollectionStore store) {
+    final active = store.hasAdvancedFilters;
+    final scheme = Theme.of(context).colorScheme;
+    return OutlinedButton.icon(
+      onPressed: _toggleAdvanced,
+      style: active
+          ? OutlinedButton.styleFrom(foregroundColor: scheme.primary)
+          : null,
+      icon: Icon(_advancedOpen ? Icons.expand_less : Icons.tune, size: 18),
+      label: Text(active ? 'Advanced •' : 'Advanced'),
+    );
+  }
+
+  /// The advanced-search panel: set, type/subtype, rules-text, mana-value, and
+  /// color filters, plus a Clear button.
+  Widget _buildAdvancedPanel(BuildContext context, CollectionStore store) {
+    const colorTokens = [
+      ('W', 'W'),
+      ('U', 'U'),
+      ('B', 'B'),
+      ('R', 'R'),
+      ('G', 'G'),
+      ('C', 'Colorless'),
+      ('M', 'Multi'),
+    ];
+    return Container(
+      margin: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Wrap(
+            spacing: 16,
+            runSpacing: 12,
+            crossAxisAlignment: WrapCrossAlignment.start,
+            children: [
+              _labeled(
+                'Set',
+                SizedBox(
+                  width: 150,
+                  child: DropdownButton<String>(
+                    isExpanded: true,
+                    isDense: true,
+                    value: store.setFilter,
+                    items: [
+                      const DropdownMenuItem(value: '', child: Text('Any set')),
+                      for (final s in store.availableSets)
+                        DropdownMenuItem(value: s, child: Text(s)),
+                    ],
+                    onChanged: (v) => store.setSetFilter(v ?? ''),
+                  ),
+                ),
+              ),
+              _labeled(
+                'Type / subtype',
+                SizedBox(
+                  width: 180,
+                  child: TextField(
+                    controller: _typeController,
+                    decoration: const InputDecoration(
+                      hintText: 'e.g. Creature, Rat',
+                      isDense: true,
+                      border: OutlineInputBorder(),
+                    ),
+                    onChanged: store.setTypeQuery,
+                  ),
+                ),
+              ),
+              _labeled(
+                'Rules text',
+                SizedBox(
+                  width: 240,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      TextField(
+                        controller: _textController,
+                        focusNode: _textFocus,
+                        decoration: const InputDecoration(
+                          hintText: 'e.g. draw a card, {T}: Add',
+                          isDense: true,
+                          border: OutlineInputBorder(),
+                        ),
+                        onChanged: store.setTextQuery,
+                      ),
+                      const SizedBox(height: 6),
+                      // Click a symbol to insert its token into the search.
+                      Wrap(
+                        spacing: 4,
+                        runSpacing: 4,
+                        children: [
+                          _symbolButton('{W}', '', const Color(0xFFF8F6D8)),
+                          _symbolButton('{U}', '', const Color(0xFFAAE0FA)),
+                          _symbolButton('{B}', '', const Color(0xFFCBC2BF)),
+                          _symbolButton('{R}', '', const Color(0xFFF9AA8F)),
+                          _symbolButton('{G}', '', const Color(0xFF9BD3AE)),
+                          _symbolButton('{C}', '', const Color(0xFFCAC5C0)),
+                          _symbolButton('{T}', '', const Color(0xFFD8D8D8),
+                              tip: 'Tap'),
+                          _symbolButton('{Q}', '', const Color(0xFFD8D8D8),
+                              tip: 'Untap'),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              _labeled(
+                'Mana value',
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    _cmcField(_cmcMinController, 'min'),
+                    const Padding(
+                      padding: EdgeInsets.symmetric(horizontal: 4),
+                      child: Text('–'),
+                    ),
+                    _cmcField(_cmcMaxController, 'max'),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Text('Colors:', style: Theme.of(context).textTheme.labelMedium),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Wrap(
+                  spacing: 6,
+                  runSpacing: 6,
+                  children: [
+                    for (final (token, label) in colorTokens)
+                      FilterChip(
+                        label: Text(label),
+                        visualDensity: VisualDensity.compact,
+                        selected: store.colorFilter.contains(token),
+                        onSelected: (_) {
+                          final next = {...store.colorFilter};
+                          if (!next.remove(token)) next.add(token);
+                          store.setColorFilter(next);
+                        },
+                      ),
+                  ],
+                ),
+              ),
+              if (store.hasAdvancedFilters)
+                TextButton.icon(
+                  onPressed: () {
+                    _typeController.clear();
+                    _textController.clear();
+                    _cmcMinController.clear();
+                    _cmcMaxController.clear();
+                    store.clearAdvancedFilters();
+                  },
+                  icon: const Icon(Icons.clear_all, size: 18),
+                  label: const Text('Clear'),
+                ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// A small numeric field for a mana-value bound.
+  Widget _cmcField(TextEditingController controller, String hint) {
+    return SizedBox(
+      width: 54,
+      child: TextField(
+        controller: controller,
+        keyboardType: TextInputType.number,
+        textAlign: TextAlign.center,
+        decoration: InputDecoration(
+          hintText: hint,
+          isDense: true,
+          border: const OutlineInputBorder(),
+        ),
+        onChanged: (_) => _applyCmc(),
+      ),
+    );
+  }
+
+  /// Maps a mana [token] (e.g. "{T}") to its glyph codepoint in the bundled
+  /// Mana icon font.
+  static const Map<String, String> _manaGlyphs = {
+    '{W}': '',
+    '{U}': '',
+    '{B}': '',
+    '{R}': '',
+    '{G}': '',
+    '{C}': '',
+    '{T}': '',
+    '{Q}': '',
+  };
+
+  /// A small round button showing the real MTG symbol for [token] (via the Mana
+  /// font) on a [bg] pip; tapping inserts the token into the rules search. The
+  /// second positional arg is unused (kept for call-site stability).
+  Widget _symbolButton(String token, String _, Color bg, {String? tip}) {
+    return Tooltip(
+      message: '${tip ?? token} — insert $token',
+      child: InkWell(
+        onTap: () => _insertToken(token),
+        customBorder: const CircleBorder(),
+        child: Container(
+          width: 26,
+          height: 26,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: bg,
+            shape: BoxShape.circle,
+            border: Border.all(color: Colors.black26),
+          ),
+          child: Text(
+            _manaGlyphs[token] ?? '',
+            style: const TextStyle(
+              fontFamily: 'Mana',
+              color: Colors.black87,
+              fontSize: 16,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Wraps [child] with a small caption [label] above it.
+  Widget _labeled(String label, Widget child) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(label, style: Theme.of(context).textTheme.labelSmall),
+        const SizedBox(height: 2),
+        child,
+      ],
     );
   }
 

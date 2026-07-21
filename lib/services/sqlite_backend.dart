@@ -36,7 +36,7 @@ class SqliteBackend implements CardBackend {
       options: OpenDatabaseOptions(
         // Bump `version` and add an `onUpgrade` branch below whenever the schema
         // changes, so existing local databases migrate forward in place.
-        version: 3,
+        version: 4,
         onConfigure: (db) => db.execute('PRAGMA foreign_keys = ON'),
         onCreate: (db, version) async {
           await db.execute('''
@@ -59,6 +59,9 @@ class SqliteBackend implements CardBackend {
               colors           TEXT,
               color_identity   TEXT,
               tags             TEXT,
+              type_line        TEXT,
+              cmc              REAL,
+              oracle_text      TEXT,
               FOREIGN KEY (folder_id) REFERENCES folders (id) ON DELETE SET NULL
             )
           ''');
@@ -73,6 +76,12 @@ class SqliteBackend implements CardBackend {
           // v3 added trade tags.
           if (oldVersion < 3) {
             await db.execute('ALTER TABLE cards ADD COLUMN tags TEXT');
+          }
+          // v4 added type line, mana value, and oracle text (advanced search).
+          if (oldVersion < 4) {
+            await db.execute('ALTER TABLE cards ADD COLUMN type_line TEXT');
+            await db.execute('ALTER TABLE cards ADD COLUMN cmc REAL');
+            await db.execute('ALTER TABLE cards ADD COLUMN oracle_text TEXT');
           }
         },
       ),
@@ -130,6 +139,9 @@ class SqliteBackend implements CardBackend {
         'colors': c.colors,
         'color_identity': c.colorIdentity,
         'tags': MtgCard.encodeTags(c.tags),
+        'type_line': c.typeLine,
+        'cmc': c.cmc,
+        'oracle_text': c.oracleText,
       };
 
   // ---- Cards ---------------------------------------------------------------
@@ -160,6 +172,29 @@ class SqliteBackend implements CardBackend {
   Future<void> setCardPrice(int id, double price) async {
     await _database
         .update('cards', {'price_usd': price}, where: 'id = ?', whereArgs: [id]);
+  }
+
+  @override
+  Future<void> setCardDetails(
+    int id, {
+    required String typeLine,
+    required double? cmc,
+    required String oracleText,
+  }) async {
+    await _database.update(
+      'cards',
+      {'type_line': typeLine, 'cmc': cmc, 'oracle_text': oracleText},
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  @override
+  Future<List<String>> distinctSetCodes() async {
+    final rows = await _database.rawQuery(
+      'SELECT DISTINCT set_code FROM cards ORDER BY set_code COLLATE NOCASE',
+    );
+    return rows.map((r) => r['set_code'] as String).toList();
   }
 
   @override
@@ -517,6 +552,9 @@ class SqliteBackend implements CardBackend {
       colors: r['colors'] as String? ?? '',
       colorIdentity: r['color_identity'] as String? ?? '',
       tags: MtgCard.decodeTags(r['tags']),
+      typeLine: r['type_line'] as String? ?? '',
+      cmc: (r['cmc'] as num?)?.toDouble(),
+      oracleText: r['oracle_text'] as String? ?? '',
     );
   }
 }
