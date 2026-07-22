@@ -6,6 +6,7 @@ import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/mtg_card.dart';
 import '../services/collection_store.dart';
@@ -51,6 +52,10 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
   bool _candidateFoil = false;
   int _candidateQty = 1;
 
+  /// Detection key of the shown candidate, so adding/dismissing it can block
+  /// an immediate re-detection of the same card still in frame.
+  String? _candidateKey;
+
   /// How the current candidate was found, shown in the confirm bar.
   String _matchSource = '';
 
@@ -63,6 +68,22 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
 
   bool _torchOn = false;
   String? _cameraError;
+
+  /// Auto-add mode: collector-line (exact printing) matches are added without
+  /// the confirm tap. Name-fallback matches always confirm — fuzzy matches
+  /// deserve a human glance. Persisted across sessions.
+  bool _autoAdd = false;
+  static const _autoAddPrefKey = 'scan_auto_add';
+
+  /// End of the pause after an auto-add, giving the user time to swap cards
+  /// before scanning resumes.
+  DateTime _cooldownUntil = DateTime.fromMillisecondsSinceEpoch(0);
+
+  /// The last auto-added detection key. The same card can't auto-add again
+  /// until a processed frame shows no card at all (i.e. it was removed or
+  /// covered) — so a lingering card doesn't double-add, but scanning several
+  /// copies of the same printing still works: each swap blanks the frame.
+  String? _lastAutoKey;
 
   /// Device-orientation → rotation degrees, for ML Kit rotation compensation.
   static const _orientations = {
@@ -77,6 +98,17 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _initCamera();
+    SharedPreferences.getInstance().then((prefs) {
+      if (mounted) {
+        setState(() => _autoAdd = prefs.getBool(_autoAddPrefKey) ?? false);
+      }
+    });
+  }
+
+  Future<void> _setAutoAdd(bool value) async {
+    setState(() => _autoAdd = value);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_autoAddPrefKey, value);
   }
 
   @override
@@ -136,6 +168,8 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
     // One frame at a time, ~3/s, and only while actively scanning.
     if (_busy || _phase != _Phase.scanning) return;
     final now = DateTime.now();
+    // Post-auto-add pause: give the user time to swap cards.
+    if (now.isBefore(_cooldownUntil)) return;
     if (now.difference(_lastProcessed) <
         const Duration(milliseconds: 350)) {
       return;
@@ -151,6 +185,15 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
       // saw tilted text, deskew the frame to that text's angle and retry.
       det ??= await _tryDeskewed(image, input, recognized);
       if (det == null) {
+        _pending = null;
+        // The frame is empty — the auto-added card was removed, so the same
+        // printing may auto-add again (next copy of a playset).
+        _lastAutoKey = null;
+        return;
+      }
+      // The just-auto-added card is still in frame — ignore it until it
+      // leaves, so it can't double-add.
+      if (det.key == _lastAutoKey) {
         _pending = null;
         return;
       }
@@ -526,8 +569,28 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
         setState(() => _phase = _Phase.scanning);
         return;
       }
+      // Auto-add: collector-line matches are exact printings, safe to add
+      // without confirmation. Then pause so the user can swap cards.
+      if (_autoAdd && det.setCode != null) {
+        final card = MtgCard.fromScryfall(json, foil: det.foil, quantity: 1);
+        final result = await widget.store.addCard(card);
+        if (!mounted) return;
+        _lastAutoKey = det.key;
+        _cooldownUntil = DateTime.now().add(const Duration(seconds: 2));
+        setState(() {
+          _addedCount += 1;
+          _phase = _Phase.scanning;
+        });
+        final label = '${card.name} (${card.setCode} #${card.collectorNumber})'
+            '${card.foil ? ' • Foil' : ''}';
+        _showHint(result.merged
+            ? 'Added $label — now ${result.quantity} owned. Next card…'
+            : 'Added $label. Next card…');
+        return;
+      }
       setState(() {
         _candidate = json;
+        _candidateKey = det.key;
         // Foil printings mark their collector line with a ★ separator, so the
         // toggle can be pre-set from the scan (still user-adjustable).
         _candidateFoil = det.foil;
@@ -560,6 +623,9 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
     );
     final result = await widget.store.addCard(card);
     if (!mounted) return;
+    // Same-card guard + swap pause, as with auto-add.
+    _lastAutoKey = _candidateKey;
+    _cooldownUntil = DateTime.now().add(const Duration(seconds: 2));
     setState(() {
       _addedCount += _candidateQty;
       _candidate = null;
@@ -572,6 +638,9 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
   }
 
   void _dismissCandidate() {
+    // The rejected card is presumably still in frame — don't re-match it
+    // until it leaves (the guard clears on the next empty frame).
+    _lastAutoKey = _candidateKey;
     setState(() {
       _candidate = null;
       _phase = _Phase.scanning;
@@ -599,6 +668,17 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
       appBar: AppBar(
         title: Text(_addedCount == 0 ? 'Scan cards' : 'Scan cards — $_addedCount added'),
         actions: [
+          // Auto-add: exact (collector-line) matches skip the confirm tap.
+          Tooltip(
+            message: 'Auto-add exact matches without confirming '
+                '(name-only matches still ask)',
+            child: FilterChip(
+              label: const Text('Auto'),
+              selected: _autoAdd,
+              onSelected: _setAutoAdd,
+            ),
+          ),
+          const SizedBox(width: 4),
           IconButton(
             tooltip: _torchOn ? 'Torch off' : 'Torch on',
             icon: Icon(_torchOn ? Icons.flash_off : Icons.flash_on),
