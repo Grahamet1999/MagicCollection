@@ -19,6 +19,9 @@ import 'import_tab.dart';
 /// CSV export flavors offered in the download menu.
 enum _ExportFormat { standard, moxfield }
 
+/// Entries in the compact (phone) top-bar overflow menu.
+enum _OverflowAction { refreshPrices, exportStandard, exportMoxfield, about }
+
 /// The main three-tab screen shown once the database connection is established.
 class HomePage extends StatelessWidget {
   const HomePage({
@@ -131,12 +134,20 @@ class HomePage extends StatelessWidget {
 
   /// Builds the top-bar account control, rebuilding on auth changes: a single
   /// "Groups — Sign in" button when signed out, or a Groups button plus an
-  /// account menu (email + Sign out) when signed in.
-  Widget _buildAccountAction(BuildContext context) {
+  /// account menu (email + Sign out) when signed in. In [compact] (phone)
+  /// layouts the labeled buttons shrink to plain icons to fit the app bar.
+  Widget _buildAccountAction(BuildContext context, {required bool compact}) {
     return ListenableBuilder(
       listenable: auth,
       builder: (context, _) {
         if (!auth.isSignedIn) {
+          if (compact) {
+            return IconButton(
+              tooltip: 'Groups — Sign in',
+              icon: const Icon(Icons.groups),
+              onPressed: () => showAuthDialog(context, auth),
+            );
+          }
           // A single clear entry point: opens sign-in, which then leads to Groups.
           return Padding(
             padding: const EdgeInsets.symmetric(horizontal: 4),
@@ -150,11 +161,18 @@ class HomePage extends StatelessWidget {
         return Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            FilledButton.tonalIcon(
-              onPressed: () => _openGroups(context),
-              icon: const Icon(Icons.groups),
-              label: const Text('Groups'),
-            ),
+            if (compact)
+              IconButton(
+                tooltip: 'Groups',
+                icon: const Icon(Icons.groups),
+                onPressed: () => _openGroups(context),
+              )
+            else
+              FilledButton.tonalIcon(
+                onPressed: () => _openGroups(context),
+                icon: const Icon(Icons.groups),
+                label: const Text('Groups'),
+              ),
             PopupMenuButton<String>(
               tooltip: auth.currentUser!.email,
               icon: const Icon(Icons.account_circle),
@@ -173,65 +191,116 @@ class HomePage extends StatelessWidget {
     );
   }
 
+  /// Shows the standard About dialog (shared by the wide and compact top bars).
+  void _showAbout(BuildContext context) {
+    showAboutDialog(
+      context: context,
+      applicationName: 'MTG Collection',
+      applicationVersion: '1.0.0',
+      applicationIcon: const Icon(Icons.style_outlined, size: 40),
+      applicationLegalese: '© 2026 @oosshh\nReleased under the MIT License.',
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final db = DatabaseService.instance;
+    // On phone-width screens the labeled buttons and chip can't all fit, so the
+    // secondary actions collapse into a single overflow menu.
+    final compact = MediaQuery.sizeOf(context).width < 600;
     return DefaultTabController(
       length: 3,
       child: Scaffold(
         appBar: AppBar(
           title: const Text('MTG Collection'),
           actions: [
-            if (FirebaseConfig.isConfigured) _buildAccountAction(context),
-            IconButton(
-              tooltip: 'Refresh prices from Scryfall',
-              icon: const Icon(Icons.refresh),
-              onPressed: () => _refreshPrices(context),
-            ),
-            IconButton(
-              tooltip: 'About',
-              icon: const Icon(Icons.info_outline),
-              onPressed: () => showAboutDialog(
-                context: context,
-                applicationName: 'MTG Collection',
-                applicationVersion: '1.0.0',
-                applicationIcon: const Icon(Icons.style_outlined, size: 40),
-                applicationLegalese:
-                    '© 2026 @oosshh\nReleased under the MIT License.',
-              ),
-            ),
-            PopupMenuButton<_ExportFormat>(
-              tooltip: 'Export collection',
-              icon: const Icon(Icons.download),
-              onSelected: (f) => _export(context, f),
-              itemBuilder: (_) => const [
-                PopupMenuItem(
-                  value: _ExportFormat.standard,
-                  child: Text('Export to CSV'),
-                ),
-                PopupMenuItem(
-                  value: _ExportFormat.moxfield,
-                  child: Text('Export to Moxfield CSV'),
-                ),
-              ],
-            ),
-            Padding(
-              padding: const EdgeInsets.only(right: 8),
-              child: Tooltip(
-                message: db.usingLocalFallback
-                    ? 'SQL Server not detected — using a local file on this PC.\n'
-                        '${db.backendDescription}'
-                    : 'Connected to ${db.backendDescription}',
-                child: Chip(
-                  visualDensity: VisualDensity.compact,
-                  avatar: Icon(
-                    db.usingLocalFallback ? Icons.sd_storage : Icons.dns,
-                    size: 16,
+            if (FirebaseConfig.isConfigured)
+              _buildAccountAction(context, compact: compact),
+            if (compact)
+              PopupMenuButton<_OverflowAction>(
+                tooltip: 'More',
+                icon: const Icon(Icons.more_vert),
+                onSelected: (a) {
+                  switch (a) {
+                    case _OverflowAction.refreshPrices:
+                      _refreshPrices(context);
+                    case _OverflowAction.exportStandard:
+                      _export(context, _ExportFormat.standard);
+                    case _OverflowAction.exportMoxfield:
+                      _export(context, _ExportFormat.moxfield);
+                    case _OverflowAction.about:
+                      _showAbout(context);
+                  }
+                },
+                itemBuilder: (_) => [
+                  const PopupMenuItem(
+                    value: _OverflowAction.refreshPrices,
+                    child: Text('Refresh prices'),
                   ),
-                  label: Text(db.usingLocalFallback ? 'Local file' : 'SQL Server'),
+                  const PopupMenuItem(
+                    value: _OverflowAction.exportStandard,
+                    child: Text('Export to CSV'),
+                  ),
+                  const PopupMenuItem(
+                    value: _OverflowAction.exportMoxfield,
+                    child: Text('Export to Moxfield CSV'),
+                  ),
+                  const PopupMenuItem(
+                    value: _OverflowAction.about,
+                    child: Text('About'),
+                  ),
+                  // Storage indicator (informational, not tappable).
+                  PopupMenuItem(
+                    enabled: false,
+                    child: Text('Storage: ${db.backendDescription}'),
+                  ),
+                ],
+              )
+            else ...[
+              IconButton(
+                tooltip: 'Refresh prices from Scryfall',
+                icon: const Icon(Icons.refresh),
+                onPressed: () => _refreshPrices(context),
+              ),
+              IconButton(
+                tooltip: 'About',
+                icon: const Icon(Icons.info_outline),
+                onPressed: () => _showAbout(context),
+              ),
+              PopupMenuButton<_ExportFormat>(
+                tooltip: 'Export collection',
+                icon: const Icon(Icons.download),
+                onSelected: (f) => _export(context, f),
+                itemBuilder: (_) => const [
+                  PopupMenuItem(
+                    value: _ExportFormat.standard,
+                    child: Text('Export to CSV'),
+                  ),
+                  PopupMenuItem(
+                    value: _ExportFormat.moxfield,
+                    child: Text('Export to Moxfield CSV'),
+                  ),
+                ],
+              ),
+              Padding(
+                padding: const EdgeInsets.only(right: 8),
+                child: Tooltip(
+                  message: db.usingLocalFallback
+                      ? 'SQL Server not detected — using a local file on this PC.\n'
+                          '${db.backendDescription}'
+                      : 'Connected to ${db.backendDescription}',
+                  child: Chip(
+                    visualDensity: VisualDensity.compact,
+                    avatar: Icon(
+                      db.usingLocalFallback ? Icons.sd_storage : Icons.dns,
+                      size: 16,
+                    ),
+                    label:
+                        Text(db.usingLocalFallback ? 'Local file' : 'SQL Server'),
+                  ),
                 ),
               ),
-            ),
+            ],
           ],
           bottom: const TabBar(
             tabs: [

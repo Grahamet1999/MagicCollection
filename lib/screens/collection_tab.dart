@@ -237,6 +237,10 @@ class _CollectionTabState extends State<CollectionTab> {
           _selectionMode = false;
           _selected.clear();
         }
+        // Phone-width screens can't fit the persistent sidebar; folders move
+        // into a bottom sheet opened from the toolbar instead.
+        final compact = MediaQuery.sizeOf(context).width < 600;
+        if (compact) return _buildMain(context, compact: true);
         return Row(
           children: [
             _FolderSidebar(store: widget.store),
@@ -248,68 +252,128 @@ class _CollectionTabState extends State<CollectionTab> {
     );
   }
 
+  /// Label for the folder-picker button in the compact layout.
+  String _currentFolderLabel(CollectionStore store) {
+    final id = store.selectedFolderId;
+    if (id == null) return 'All cards';
+    if (id == unfiledSentinel) return 'Unfiled';
+    for (final f in store.folders) {
+      if (f.id == id) return f.name;
+    }
+    return 'All cards';
+  }
+
+  /// Opens the folder list as a modal bottom sheet (compact layout only).
+  void _showFolderSheet(BuildContext context) {
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) => SafeArea(
+        child: ListenableBuilder(
+          listenable: widget.store,
+          builder: (_, __) => _FolderSidebar(
+            store: widget.store,
+            width: null,
+            onSelected: () => Navigator.pop(ctx),
+          ),
+        ),
+      ),
+    );
+  }
+
   /// The main pane right of the sidebar: search/sort/tag/count/select bar, an
-  /// optional selection action bar, and the card grid.
-  Widget _buildMain(BuildContext context) {
+  /// optional selection action bar, and the card grid. In [compact] (phone)
+  /// layouts the sidebar is absent, so a folder-picker button joins the
+  /// toolbar and the controls wrap onto extra lines instead of one long row.
+  Widget _buildMain(BuildContext context, {bool compact = false}) {
     final store = widget.store;
+    final searchField = TextField(
+      controller: _searchController,
+      decoration: InputDecoration(
+        hintText: 'Search by name, set code, or collector number…',
+        prefixIcon: const Icon(Icons.search),
+        border: const OutlineInputBorder(),
+        isDense: true,
+        suffixIcon: store.query.isEmpty
+            ? null
+            : IconButton(
+                icon: const Icon(Icons.clear),
+                onPressed: () {
+                  _searchController.clear();
+                  store.setQuery('');
+                },
+              ),
+      ),
+      onChanged: store.setQuery,
+    );
+    // Selection (bulk move/delete) acts on individual entries, so it's only
+    // available in a specific folder or Unfiled, not the combined "All cards"
+    // view.
+    final selectButton = store.isAggregated
+        ? null
+        : OutlinedButton.icon(
+            onPressed: store.cards.isEmpty
+                ? null
+                : () => setState(() {
+                      _selectionMode = !_selectionMode;
+                      if (!_selectionMode) _selected.clear();
+                    }),
+            icon: Icon(
+              _selectionMode ? Icons.close : Icons.checklist,
+            ),
+            label: Text(_selectionMode ? 'Cancel' : 'Select'),
+          );
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Padding(
           padding: const EdgeInsets.all(16),
-          child: Row(
-            children: [
-              Expanded(
-                child: TextField(
-                  controller: _searchController,
-                  decoration: InputDecoration(
-                    hintText: 'Search by name, set code, or collector number…',
-                    prefixIcon: const Icon(Icons.search),
-                    border: const OutlineInputBorder(),
-                    isDense: true,
-                    suffixIcon: store.query.isEmpty
-                        ? null
-                        : IconButton(
-                            icon: const Icon(Icons.clear),
-                            onPressed: () {
-                              _searchController.clear();
-                              store.setQuery('');
-                            },
-                          ),
-                  ),
-                  onChanged: store.setQuery,
+          child: compact
+              ? Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    searchField,
+                    const SizedBox(height: 10),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      children: [
+                        OutlinedButton.icon(
+                          onPressed: () => _showFolderSheet(context),
+                          icon: const Icon(Icons.folder_outlined),
+                          label: Text(_currentFolderLabel(store)),
+                        ),
+                        _buildSortControl(context, store),
+                        _buildTagFilter(context, store),
+                        _buildAdvancedToggle(context, store),
+                        Text(
+                          _countLabel(store),
+                          style: Theme.of(context).textTheme.bodyMedium,
+                        ),
+                        if (selectButton != null) selectButton,
+                      ],
+                    ),
+                  ],
+                )
+              : Row(
+                  children: [
+                    Expanded(child: searchField),
+                    const SizedBox(width: 12),
+                    _buildSortControl(context, store),
+                    const SizedBox(width: 8),
+                    _buildTagFilter(context, store),
+                    const SizedBox(width: 8),
+                    _buildAdvancedToggle(context, store),
+                    const SizedBox(width: 16),
+                    Text(
+                      _countLabel(store),
+                      style: Theme.of(context).textTheme.bodyMedium,
+                    ),
+                    const SizedBox(width: 12),
+                    if (selectButton != null) selectButton,
+                  ],
                 ),
-              ),
-              const SizedBox(width: 12),
-              _buildSortControl(context, store),
-              const SizedBox(width: 8),
-              _buildTagFilter(context, store),
-              const SizedBox(width: 8),
-              _buildAdvancedToggle(context, store),
-              const SizedBox(width: 16),
-              Text(
-                _countLabel(store),
-                style: Theme.of(context).textTheme.bodyMedium,
-              ),
-              const SizedBox(width: 12),
-              // Selection (bulk move/delete) acts on individual entries, so it's
-              // only available in a specific folder or Unfiled, not the combined
-              // "All cards" view.
-              if (!store.isAggregated)
-                OutlinedButton.icon(
-                  onPressed: store.cards.isEmpty
-                      ? null
-                      : () => setState(() {
-                            _selectionMode = !_selectionMode;
-                            if (!_selectionMode) _selected.clear();
-                          }),
-                  icon: Icon(
-                    _selectionMode ? Icons.close : Icons.checklist,
-                  ),
-                  label: Text(_selectionMode ? 'Cancel' : 'Select'),
-                ),
-            ],
-          ),
         ),
         if (_advancedOpen) _buildAdvancedPanel(context, store),
         if (_backfilling)
@@ -816,16 +880,24 @@ class _CollectionTabState extends State<CollectionTab> {
 }
 
 /// Left sidebar listing "All cards", "Unfiled", and each folder (with counts
-/// and rename/delete menus), plus a New-folder button.
+/// and rename/delete menus), plus a New-folder button. Also reused as the
+/// content of the compact layout's folder bottom sheet ([width] null to fill,
+/// [onSelected] to close the sheet after a pick).
 class _FolderSidebar extends StatelessWidget {
-  const _FolderSidebar({required this.store});
+  const _FolderSidebar({required this.store, this.width = 240, this.onSelected});
 
   final CollectionStore store;
+
+  /// Fixed width when docked as a sidebar; null to fill (bottom sheet).
+  final double? width;
+
+  /// Called after any folder is tapped (used to dismiss the bottom sheet).
+  final VoidCallback? onSelected;
 
   @override
   Widget build(BuildContext context) {
     return SizedBox(
-      width: 240,
+      width: width,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -851,14 +923,14 @@ class _FolderSidebar extends StatelessWidget {
                   icon: Icons.all_inbox,
                   label: 'All cards',
                   selected: store.selectedFolderId == null,
-                  onTap: () => store.selectFolder(null),
+                  onTap: () => _select(null),
                 ),
                 _navTile(
                   context,
                   icon: Icons.inbox_outlined,
                   label: 'Unfiled',
                   selected: store.selectedFolderId == unfiledSentinel,
-                  onTap: () => store.selectFolder(unfiledSentinel),
+                  onTap: () => _select(unfiledSentinel),
                 ),
                 const Divider(),
                 for (final folder in store.folders)
@@ -868,7 +940,7 @@ class _FolderSidebar extends StatelessWidget {
                     label: folder.name,
                     count: store.folderCounts[folder.id] ?? 0,
                     selected: store.selectedFolderId == folder.id,
-                    onTap: () => store.selectFolder(folder.id),
+                    onTap: () => _select(folder.id),
                     onRename: () => _renameFolder(context, folder),
                     onDelete: () => _deleteFolder(context, folder),
                   ),
@@ -878,6 +950,13 @@ class _FolderSidebar extends StatelessWidget {
         ],
       ),
     );
+  }
+
+  /// Selects [folderId] and notifies [onSelected] (dismisses the bottom sheet
+  /// in the compact layout).
+  void _select(int? folderId) {
+    store.selectFolder(folderId);
+    onSelected?.call();
   }
 
   /// One sidebar row. Shows a trailing count and, for real folders, a

@@ -388,95 +388,127 @@ class _GroupsScreenState extends State<GroupsScreen> {
   }
 
   /// The main layout: group picker + invite/members/options row, the
-  /// search/owner/tag filter row, and the live binder list.
+  /// search/owner/tag filter row, and the live binder list. On phone-width
+  /// screens both rows wrap instead of overflowing.
   Widget _buildBody(BuildContext context) {
     final group = _selected;
+    final compact = MediaQuery.sizeOf(context).width < 600;
+    final groupPicker = DropdownButton<Group>(
+      value: group,
+      items: [
+        for (final g in _myGroups)
+          DropdownMenuItem(value: g, child: Text(g.name)),
+      ],
+      onChanged: (g) {
+        if (g != null) _select(g);
+      },
+    );
+    final groupInfo = group == null
+        ? const <Widget>[]
+        : <Widget>[
+            Chip(
+              avatar: const Icon(Icons.key, size: 16),
+              label: Text('Invite: ${group.inviteCode}'),
+            ),
+            Text('${group.members.length} member'
+                '${group.members.length == 1 ? '' : 's'}'),
+            PopupMenuButton<String>(
+              tooltip: 'Group options',
+              icon: const Icon(Icons.more_vert),
+              onSelected: (v) {
+                if (v == 'leave') _leaveGroup(group);
+                if (v == 'delete') _deleteGroup(group);
+              },
+              itemBuilder: (_) => [
+                if (group.ownerUid == _uid)
+                  const PopupMenuItem(
+                      value: 'delete', child: Text('Delete group'))
+                else
+                  const PopupMenuItem(
+                      value: 'leave', child: Text('Leave group')),
+              ],
+            ),
+          ];
+    final syncButton = FilledButton.icon(
+      onPressed: _publishing ? null : _publish,
+      icon: const Icon(Icons.cloud_upload),
+      label: Text(_publishing
+          ? 'Publishing…'
+          : compact
+              ? 'Sync collection'
+              : 'Sync my collection to this group'),
+    );
+    final searchField = TextField(
+      decoration: const InputDecoration(
+        hintText: 'Search the group binder…',
+        prefixIcon: Icon(Icons.search),
+        border: OutlineInputBorder(),
+        isDense: true,
+      ),
+      onChanged: (v) => setState(() => _search = v),
+    );
+    final ownerFilter = group == null
+        ? null
+        : DropdownButton<String>(
+            value: _ownerFilter,
+            items: [
+              const DropdownMenuItem(value: '', child: Text('Everyone')),
+              for (final m in group.members)
+                DropdownMenuItem(value: m.uid, child: Text(m.displayName)),
+            ],
+            onChanged: (v) => setState(() => _ownerFilter = v ?? ''),
+          );
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Padding(
           padding: const EdgeInsets.all(12),
-          child: Row(
-            children: [
-              DropdownButton<Group>(
-                value: group,
-                items: [
-                  for (final g in _myGroups)
-                    DropdownMenuItem(value: g, child: Text(g.name)),
-                ],
-                onChanged: (g) {
-                  if (g != null) _select(g);
-                },
-              ),
-              const SizedBox(width: 16),
-              if (group != null) ...[
-                Chip(
-                  avatar: const Icon(Icons.key, size: 16),
-                  label: Text('Invite: ${group.inviteCode}'),
-                ),
-                const SizedBox(width: 8),
-                Text('${group.members.length} member'
-                    '${group.members.length == 1 ? '' : 's'}'),
-                const SizedBox(width: 4),
-                PopupMenuButton<String>(
-                  tooltip: 'Group options',
-                  icon: const Icon(Icons.more_vert),
-                  onSelected: (v) {
-                    if (v == 'leave') _leaveGroup(group);
-                    if (v == 'delete') _deleteGroup(group);
-                  },
-                  itemBuilder: (_) => [
-                    if (group.ownerUid == _uid)
-                      const PopupMenuItem(
-                          value: 'delete', child: Text('Delete group'))
-                    else
-                      const PopupMenuItem(
-                          value: 'leave', child: Text('Leave group')),
+          child: compact
+              ? Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [groupPicker, ...groupInfo, syncButton],
+                )
+              : Row(
+                  children: [
+                    groupPicker,
+                    const SizedBox(width: 16),
+                    for (final w in groupInfo) ...[
+                      w,
+                      const SizedBox(width: 8),
+                    ],
+                    const Spacer(),
+                    syncButton,
                   ],
                 ),
-              ],
-              const Spacer(),
-              FilledButton.icon(
-                onPressed: _publishing ? null : _publish,
-                icon: const Icon(Icons.cloud_upload),
-                label: Text(_publishing
-                    ? 'Publishing…'
-                    : 'Sync my collection to this group'),
-              ),
-            ],
-          ),
         ),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 12),
-          child: Row(
-            children: [
-              Expanded(
-                child: TextField(
-                  decoration: const InputDecoration(
-                    hintText: 'Search the group binder…',
-                    prefixIcon: Icon(Icons.search),
-                    border: OutlineInputBorder(),
-                    isDense: true,
-                  ),
-                  onChanged: (v) => setState(() => _search = v),
-                ),
-              ),
-              const SizedBox(width: 12),
-              if (group != null)
-                DropdownButton<String>(
-                  value: _ownerFilter,
-                  items: [
-                    const DropdownMenuItem(value: '', child: Text('Everyone')),
-                    for (final m in group.members)
-                      DropdownMenuItem(
-                          value: m.uid, child: Text(m.displayName)),
+          child: compact
+              ? Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    searchField,
+                    Wrap(
+                      spacing: 12,
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      children: [
+                        if (ownerFilter != null) ownerFilter,
+                        _buildTagFilter(context),
+                      ],
+                    ),
                   ],
-                  onChanged: (v) => setState(() => _ownerFilter = v ?? ''),
+                )
+              : Row(
+                  children: [
+                    Expanded(child: searchField),
+                    const SizedBox(width: 12),
+                    if (ownerFilter != null) ownerFilter,
+                    const SizedBox(width: 8),
+                    _buildTagFilter(context),
+                  ],
                 ),
-              const SizedBox(width: 8),
-              _buildTagFilter(context),
-            ],
-          ),
         ),
         if (_error != null)
           Padding(

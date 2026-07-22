@@ -136,6 +136,25 @@ class _DecksTabState extends State<DecksTab> {
     return ListenableBuilder(
       listenable: store,
       builder: (context, _) {
+        // Phone-width screens can't fit the persistent deck list; it moves
+        // into a bottom sheet opened from a picker button instead.
+        final compact = MediaQuery.sizeOf(context).width < 600;
+        if (compact) {
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+                child: OutlinedButton.icon(
+                  onPressed: () => _showDeckSheet(context),
+                  icon: const Icon(Icons.dashboard_customize_outlined),
+                  label: Text(store.selectedDeck?.name ?? 'Choose deck'),
+                ),
+              ),
+              Expanded(child: _buildContent(context, compact: true)),
+            ],
+          );
+        }
         return Row(
           children: [
             _buildSidebar(context),
@@ -147,13 +166,36 @@ class _DecksTabState extends State<DecksTab> {
     );
   }
 
+  /// Opens the deck list as a modal bottom sheet (compact layout only).
+  void _showDeckSheet(BuildContext context) {
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) => SafeArea(
+        child: ListenableBuilder(
+          listenable: store,
+          builder: (_, __) => _buildSidebar(
+            ctx,
+            width: null,
+            onSelected: () => Navigator.pop(ctx),
+          ),
+        ),
+      ),
+    );
+  }
+
   // ---- Sidebar -------------------------------------------------------------
 
   /// The left deck-list column: a "New deck" button and every deck with its
-  /// card count and a rename/delete menu.
-  Widget _buildSidebar(BuildContext context) {
+  /// card count and a rename/delete menu. Also reused as the compact layout's
+  /// bottom-sheet content ([width] null to fill, [onSelected] to dismiss).
+  Widget _buildSidebar(
+    BuildContext context, {
+    double? width = 240,
+    VoidCallback? onSelected,
+  }) {
     return SizedBox(
-      width: 240,
+      width: width,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -211,7 +253,10 @@ class _DecksTabState extends State<DecksTab> {
                               ),
                             ],
                           ),
-                          onTap: () => store.selectDeck(deck.id),
+                          onTap: () {
+                            store.selectDeck(deck.id);
+                            onSelected?.call();
+                          },
                         ),
                     ],
                   ),
@@ -226,7 +271,7 @@ class _DecksTabState extends State<DecksTab> {
   /// The right pane for the selected deck: header, stats, add panel, then the
   /// commander / mainboard-by-type / sideboard sections. Prompts to create a
   /// deck when none is selected.
-  Widget _buildContent(BuildContext context) {
+  Widget _buildContent(BuildContext context, {bool compact = false}) {
     final deck = store.selectedDeck;
     if (deck == null) {
       return Center(
@@ -250,7 +295,7 @@ class _DecksTabState extends State<DecksTab> {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        _buildHeader(context, deck),
+        _buildHeader(context, deck, compact: compact),
         const SizedBox(height: 12),
         _buildStats(context),
         const SizedBox(height: 12),
@@ -423,35 +468,29 @@ class _DecksTabState extends State<DecksTab> {
     return v == 7 ? 'MV 7+' : 'MV $v';
   }
 
-  /// Deck name plus the format dropdown.
-  Widget _buildHeader(BuildContext context, Deck deck) {
-    return Row(
+  /// Deck name plus the CSV buttons and format dropdown. In [compact] (phone)
+  /// layouts the controls wrap below the name instead of sharing its row.
+  Widget _buildHeader(BuildContext context, Deck deck, {bool compact = false}) {
+    final importButton = Tooltip(
+      message: 'CSV columns: name, or set + collector number (required); '
+          'optional quantity, foil, board (main/side/commander).',
+      child: OutlinedButton.icon(
+        onPressed: _importing ? null : () => _importDeckCsv(deck.id!),
+        icon: const Icon(Icons.upload_file),
+        label: Text(_importing ? 'Importing…' : 'Import CSV'),
+      ),
+    );
+    final exportButton = Tooltip(
+      message: 'Export this deck to a CSV the importer can read back.',
+      child: OutlinedButton.icon(
+        onPressed: () => _exportDeckCsv(deck),
+        icon: const Icon(Icons.download),
+        label: const Text('Export CSV'),
+      ),
+    );
+    final formatControl = Row(
+      mainAxisSize: MainAxisSize.min,
       children: [
-        Expanded(
-          child: Text(deck.name,
-              style: Theme.of(context).textTheme.headlineSmall,
-              overflow: TextOverflow.ellipsis),
-        ),
-        const SizedBox(width: 12),
-        Tooltip(
-          message: 'CSV columns: name, or set + collector number (required); '
-              'optional quantity, foil, board (main/side/commander).',
-          child: OutlinedButton.icon(
-            onPressed: _importing ? null : () => _importDeckCsv(deck.id!),
-            icon: const Icon(Icons.upload_file),
-            label: Text(_importing ? 'Importing…' : 'Import CSV'),
-          ),
-        ),
-        const SizedBox(width: 8),
-        Tooltip(
-          message: 'Export this deck to a CSV the importer can read back.',
-          child: OutlinedButton.icon(
-            onPressed: () => _exportDeckCsv(deck),
-            icon: const Icon(Icons.download),
-            label: const Text('Export CSV'),
-          ),
-        ),
-        const SizedBox(width: 16),
         const Text('Format:'),
         const SizedBox(width: 8),
         DropdownButton<String?>(
@@ -464,6 +503,38 @@ class _DecksTabState extends State<DecksTab> {
           ],
           onChanged: (v) => store.setFormat(deck.id!, v),
         ),
+      ],
+    );
+    if (compact) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(deck.name,
+              style: Theme.of(context).textTheme.headlineSmall,
+              overflow: TextOverflow.ellipsis),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [importButton, exportButton, formatControl],
+          ),
+        ],
+      );
+    }
+    return Row(
+      children: [
+        Expanded(
+          child: Text(deck.name,
+              style: Theme.of(context).textTheme.headlineSmall,
+              overflow: TextOverflow.ellipsis),
+        ),
+        const SizedBox(width: 12),
+        importButton,
+        const SizedBox(width: 8),
+        exportButton,
+        const SizedBox(width: 16),
+        formatControl,
       ],
     );
   }
