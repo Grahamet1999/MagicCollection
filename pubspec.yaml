@@ -51,6 +51,10 @@ dependencies:
   file_picker: ^11.0.2
   # Persists the signed-in session and cloud settings between launches
   shared_preferences: ^2.5.5
+  # Card scanner (Android/iOS only): camera preview + frame stream
+  camera: ^0.11.0
+  # On-device OCR for the card scanner (no API key, works offline)
+  google_mlkit_text_recognition: ^0.15.0
 
 dev_dependencies:
   flutter_test:

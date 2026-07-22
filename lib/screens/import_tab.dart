@@ -1,3 +1,5 @@
+import 'dart:io' show Platform;
+
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -8,6 +10,7 @@ import '../services/csv_import_service.dart';
 import '../services/database_service.dart';
 import '../services/scryfall_service.dart';
 import '../widgets/card_image.dart';
+import 'scan_screen.dart';
 
 /// Import tab: look up cards on Scryfall two ways — by exact printing
 /// (set code + collector number) or by name search — and add them to the
@@ -285,34 +288,36 @@ class _ImportTabState extends State<ImportTab> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
+          // A Wrap so the CSV button drops below the mode selector on narrow
+          // (phone) screens instead of squishing the segment labels.
+          Wrap(
+            spacing: 12,
+            runSpacing: 12,
+            crossAxisAlignment: WrapCrossAlignment.center,
             children: [
-              Expanded(
-                child: SegmentedButton<_Mode>(
-                  segments: const [
-                    ButtonSegment(
-                      value: _Mode.setNumber,
-                      label: Text('Set + Collector #'),
-                      icon: Icon(Icons.tag),
-                    ),
-                    ButtonSegment(
-                      value: _Mode.name,
-                      label: Text('Name search'),
-                      icon: Icon(Icons.search),
-                    ),
-                  ],
-                  selected: {_mode},
-                  onSelectionChanged: (s) {
-                    setState(() {
-                      _mode = s.first;
-                      _error = null;
-                      _selected = null;
-                      _searchResults = [];
-                    });
-                  },
-                ),
+              SegmentedButton<_Mode>(
+                segments: const [
+                  ButtonSegment(
+                    value: _Mode.setNumber,
+                    label: Text('Set + Collector #'),
+                    icon: Icon(Icons.tag),
+                  ),
+                  ButtonSegment(
+                    value: _Mode.name,
+                    label: Text('Name search'),
+                    icon: Icon(Icons.search),
+                  ),
+                ],
+                selected: {_mode},
+                onSelectionChanged: (s) {
+                  setState(() {
+                    _mode = s.first;
+                    _error = null;
+                    _selected = null;
+                    _searchResults = [];
+                  });
+                },
               ),
-              const SizedBox(width: 12),
               Tooltip(
                 message: 'CSV columns: name, or set + collector number '
                     '(required); optional quantity, foil, folder.',
@@ -322,6 +327,17 @@ class _ImportTabState extends State<ImportTab> {
                   label: Text(_importing ? 'Importing…' : 'Import from CSV'),
                 ),
               ),
+              // Camera scanning needs a device camera — mobile only.
+              if (Platform.isAndroid || Platform.isIOS)
+                FilledButton.tonalIcon(
+                  onPressed: () {
+                    Navigator.of(context).push(MaterialPageRoute(
+                      builder: (_) => ScanScreen(store: widget.store),
+                    ));
+                  },
+                  icon: const Icon(Icons.document_scanner_outlined),
+                  label: const Text('Scan cards'),
+                ),
             ],
           ),
           const SizedBox(height: 16),
@@ -343,17 +359,23 @@ class _ImportTabState extends State<ImportTab> {
     );
   }
 
-  /// The set-code + collector-number + quantity entry row, wired for fast
-  /// keyboard entry (Enter chains fields, then adds).
+  /// The set-code + collector-number + quantity entry fields, wired for fast
+  /// keyboard entry (Enter chains fields, then adds). A [Wrap] so the fields
+  /// flow onto extra lines on narrow (phone) screens instead of overflowing.
   Widget _buildSetNumberForm() {
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
+    return Wrap(
+      spacing: 12,
+      runSpacing: 12,
+      crossAxisAlignment: WrapCrossAlignment.center,
       children: [
         SizedBox(
           width: 150,
           child: TextField(
             controller: _setController,
             focusNode: _setFocus,
+            // Set codes are always uppercase; force it as the user types.
+            textCapitalization: TextCapitalization.characters,
+            inputFormatters: [_UpperCaseFormatter()],
             decoration: const InputDecoration(
               labelText: 'Set code',
               hintText: 'e.g. MH3',
@@ -364,7 +386,6 @@ class _ImportTabState extends State<ImportTab> {
             onSubmitted: (_) => _numberFocus.requestFocus(),
           ),
         ),
-        const SizedBox(width: 12),
         SizedBox(
           width: 170,
           child: TextField(
@@ -380,7 +401,6 @@ class _ImportTabState extends State<ImportTab> {
             onSubmitted: (_) => _loading ? null : _quickAddBySetNumber(),
           ),
         ),
-        const SizedBox(width: 12),
         SizedBox(
           width: 90,
           child: TextField(
@@ -397,13 +417,11 @@ class _ImportTabState extends State<ImportTab> {
             onSubmitted: (_) => _loading ? null : _quickAddBySetNumber(),
           ),
         ),
-        const SizedBox(width: 12),
         FilledButton.icon(
           onPressed: _loading ? null : _quickAddBySetNumber,
           icon: const Icon(Icons.add),
           label: const Text('Add'),
         ),
-        const SizedBox(width: 8),
         OutlinedButton.icon(
           onPressed: _loading ? null : _lookupBySetNumber,
           icon: const Icon(Icons.search),
@@ -504,68 +522,83 @@ class _ImportTabState extends State<ImportTab> {
   Widget _buildLastAdded(_LastAdded last) {
     final card = last.card;
     final scheme = Theme.of(context).colorScheme;
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
+    final details = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Row(
+          mainAxisSize: MainAxisSize.min,
           children: [
-            CardImage(
-              url: card.imageUrl,
-              width: 280,
-              height: 392,
-              enlargeOnHover: false,
-            ),
-            const SizedBox(width: 20),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      Icon(Icons.check_circle, color: scheme.primary, size: 20),
-                      const SizedBox(width: 8),
-                      Text(
-                        'LAST ADDED',
-                        style: Theme.of(context)
-                            .textTheme
-                            .labelLarge
-                            ?.copyWith(
-                              color: scheme.primary,
-                              letterSpacing: 1.2,
-                            ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    card.name,
-                    style: Theme.of(context).textTheme.headlineSmall,
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    '${card.setCode} #${card.collectorNumber}'
-                    '${card.foil ? ' • Foil' : ''}',
-                    style: Theme.of(context).textTheme.titleMedium,
-                  ),
-                  if (card.priceUsd != null) ...[
-                    const SizedBox(height: 4),
-                    Text('\$${card.priceUsd!.toStringAsFixed(2)} USD'),
-                  ],
-                  const SizedBox(height: 12),
-                  Text(
-                    last.merged
-                        ? 'Added ${card.quantity} — now ${last.totalQuantity} '
-                            'in your collection.'
-                        : 'Added ${card.quantity} to your collection.',
-                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                          color: scheme.outline,
-                        ),
-                  ),
-                ],
+            Icon(Icons.check_circle, color: scheme.primary, size: 20),
+            const SizedBox(width: 8),
+            Flexible(
+              child: Text(
+                'LAST ADDED',
+                style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                      color: scheme.primary,
+                      letterSpacing: 1.2,
+                    ),
               ),
             ),
           ],
+        ),
+        const SizedBox(height: 8),
+        Text(
+          card.name,
+          style: Theme.of(context).textTheme.headlineSmall,
+        ),
+        const SizedBox(height: 4),
+        Text(
+          '${card.setCode} #${card.collectorNumber}'
+          '${card.foil ? ' • Foil' : ''}',
+          style: Theme.of(context).textTheme.titleMedium,
+        ),
+        if (card.priceUsd != null) ...[
+          const SizedBox(height: 4),
+          Text('\$${card.priceUsd!.toStringAsFixed(2)} USD'),
+        ],
+        const SizedBox(height: 12),
+        Text(
+          last.merged
+              ? 'Added ${card.quantity} — now ${last.totalQuantity} '
+                  'in your collection.'
+              : 'Added ${card.quantity} to your collection.',
+          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                color: scheme.outline,
+              ),
+        ),
+      ],
+    );
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        // Image beside the details when there's room, above them when the
+        // screen is too narrow (phones) for both side by side.
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final narrow = constraints.maxWidth < 480;
+            final image = CardImage(
+              url: card.imageUrl,
+              width: narrow ? 200 : 280,
+              height: narrow ? 280 : 392,
+              enlargeOnHover: false,
+            );
+            if (narrow) {
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [image, const SizedBox(height: 12), details],
+              );
+            }
+            return Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                image,
+                const SizedBox(width: 20),
+                Expanded(child: details),
+              ],
+            );
+          },
         ),
       ),
     );
@@ -720,6 +753,20 @@ class _AddCardPanelState extends State<_AddCardPanel> {
           ],
         ),
       ),
+    );
+  }
+}
+
+/// Uppercases text as it's typed, used to keep set codes capitalized.
+class _UpperCaseFormatter extends TextInputFormatter {
+  @override
+  TextEditingValue formatEditUpdate(
+    TextEditingValue oldValue,
+    TextEditingValue newValue,
+  ) {
+    return TextEditingValue(
+      text: newValue.text.toUpperCase(),
+      selection: newValue.selection,
     );
   }
 }

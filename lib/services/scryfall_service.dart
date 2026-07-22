@@ -49,6 +49,22 @@ class ScryfallService {
     return jsonDecode(res.body) as Map<String, dynamic>;
   }
 
+  /// Resolves a possibly-misspelled name via `/cards/named?fuzzy=` (used by
+  /// the card scanner, where the name comes from OCR). Returns null when
+  /// Scryfall can't narrow the input to a single card.
+  Future<Map<String, dynamic>?> getByFuzzyName(String name) async {
+    final trimmed = name.trim();
+    if (trimmed.isEmpty) return null;
+    final uri = Uri.parse('$_base/cards/named')
+        .replace(queryParameters: {'fuzzy': trimmed});
+    final res = await _client.get(uri, headers: _headers);
+    if (res.statusCode == 404) return null;
+    if (res.statusCode != 200) {
+      throw ScryfallException(_messageFor(res));
+    }
+    return jsonDecode(res.body) as Map<String, dynamic>;
+  }
+
   /// Searches printings by name via `/cards/search`. Uses `unique=prints` so the
   /// caller can pick among the different printings of a card. When
   /// [colorIdentity] is provided (WUBRG letters, or "" for a colorless
