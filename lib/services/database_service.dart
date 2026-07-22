@@ -1,3 +1,5 @@
+import 'dart:io' show Platform;
+
 import '../models/deck.dart';
 import '../models/deck_card.dart';
 import '../models/folder.dart';
@@ -38,21 +40,28 @@ class DatabaseService {
 
   Future<void> init() async {
     if (_backend != null) return;
-    try {
-      final sql = SqlServerBackend();
-      await sql.init();
-      _backend = sql;
-      usingLocalFallback = false;
-      backendDescription =
-          'SQL Server — ${DbConfig.server}/${DbConfig.database}';
-    } on BackendUnavailableException {
-      // SQL Server isn't available; use the embedded SQLite file instead.
-      final lite = SqliteBackend();
-      await lite.init();
-      _backend = lite;
-      usingLocalFallback = true;
-      backendDescription = 'Local file (SQL Server not detected)';
+    // SQL Server over ODBC is only reachable on Windows desktop; every other
+    // platform (Android, etc.) goes straight to the embedded SQLite file.
+    if (Platform.isWindows) {
+      try {
+        final sql = SqlServerBackend();
+        await sql.init();
+        _backend = sql;
+        usingLocalFallback = false;
+        backendDescription =
+            'SQL Server — ${DbConfig.server}/${DbConfig.database}';
+        return;
+      } on BackendUnavailableException {
+        // SQL Server isn't available; use the embedded SQLite file instead.
+      }
     }
+    final lite = SqliteBackend();
+    await lite.init();
+    _backend = lite;
+    usingLocalFallback = true;
+    backendDescription = Platform.isWindows
+        ? 'Local file (SQL Server not detected)'
+        : 'Local file';
   }
 
   // ---- Cards (forwarded) ---------------------------------------------------

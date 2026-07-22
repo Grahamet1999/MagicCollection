@@ -1,3 +1,5 @@
+import 'dart:io' show Platform;
+
 import 'package:flutter/material.dart';
 
 import '../services/auth_service.dart';
@@ -128,7 +130,7 @@ class _StartupGateState extends State<StartupGate> {
               children: [
                 CircularProgressIndicator(),
                 SizedBox(height: 16),
-                Text('Connecting to SQL Server…'),
+                Text('Opening your collection…'),
               ],
             ),
           ),
@@ -153,6 +155,9 @@ class _ErrorScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    // Only Windows desktop ever attempts SQL Server; elsewhere the failure is
+    // in the local SQLite file, so the connection checklist doesn't apply.
+    final isWindows = Platform.isWindows;
     return Scaffold(
       body: Center(
         child: ConstrainedBox(
@@ -168,19 +173,23 @@ class _ErrorScreen extends StatelessWidget {
                     Icon(Icons.cloud_off, color: scheme.error, size: 32),
                     const SizedBox(width: 12),
                     Text(
-                      "Couldn't connect to SQL Server",
+                      isWindows
+                          ? "Couldn't connect to SQL Server"
+                          : "Couldn't open your collection",
                       style: Theme.of(context).textTheme.headlineSmall,
                     ),
                   ],
                 ),
                 const SizedBox(height: 16),
-                Text(
-                  'The app uses ${DbConfig.driver} to reach '
-                  '"${DbConfig.server}" (database "${DbConfig.database}", '
-                  'Windows authentication).',
-                  style: Theme.of(context).textTheme.bodyMedium,
-                ),
-                const SizedBox(height: 16),
+                if (isWindows) ...[
+                  Text(
+                    'The app uses ${DbConfig.driver} to reach '
+                    '"${DbConfig.server}" (database "${DbConfig.database}", '
+                    'Windows authentication).',
+                    style: Theme.of(context).textTheme.bodyMedium,
+                  ),
+                  const SizedBox(height: 16),
+                ],
                 Container(
                   width: double.infinity,
                   padding: const EdgeInsets.all(12),
@@ -197,20 +206,23 @@ class _ErrorScreen extends StatelessWidget {
                     ),
                   ),
                 ),
-                const SizedBox(height: 16),
-                Text(
-                  'Things to check:',
-                  style: Theme.of(context).textTheme.titleSmall,
-                ),
-                const SizedBox(height: 4),
-                const Text('• The SQL Server service is running.'),
-                const Text(
-                  '• The server/instance and driver name in db_config.dart '
-                  'match your setup.',
-                ),
-                const Text(
-                  '• Your Windows account can connect (Windows authentication).',
-                ),
+                if (isWindows) ...[
+                  const SizedBox(height: 16),
+                  Text(
+                    'Things to check:',
+                    style: Theme.of(context).textTheme.titleSmall,
+                  ),
+                  const SizedBox(height: 4),
+                  const Text('• The SQL Server service is running.'),
+                  const Text(
+                    '• The server/instance and driver name in db_config.dart '
+                    'match your setup.',
+                  ),
+                  const Text(
+                    '• Your Windows account can connect '
+                    '(Windows authentication).',
+                  ),
+                ],
                 const SizedBox(height: 24),
                 Align(
                   alignment: Alignment.centerRight,
