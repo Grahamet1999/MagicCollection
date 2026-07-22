@@ -1,8 +1,11 @@
+import 'dart:async' show unawaited;
 import 'dart:io' show Platform;
 
 import 'package:flutter/material.dart';
 
 import '../services/auth_service.dart';
+import '../services/card_image_cache.dart';
+import '../services/cloud_backup_service.dart';
 import '../services/collection_store.dart';
 import '../services/database_service.dart';
 import '../services/db_config.dart';
@@ -24,6 +27,7 @@ class StartupGate extends StatefulWidget {
     required this.deckStore,
     required this.auth,
     required this.groups,
+    required this.backup,
   });
 
   // The shared services, threaded through to [HomePage] once ready.
@@ -31,6 +35,7 @@ class StartupGate extends StatefulWidget {
   final DeckStore deckStore;
   final AuthService auth;
   final GroupService groups;
+  final CloudBackupService backup;
 
   @override
   State<StartupGate> createState() => _StartupGateState();
@@ -47,6 +52,11 @@ class _StartupGateState extends State<StartupGate> {
 
   /// Ensures the one-time launch sign-in prompt only appears once.
   bool _promptedLogin = false;
+
+  /// Tracks sign-in transitions so the cloud-freshness check runs once per
+  /// sign-in (session restore at startup, or a manual sign-in later).
+  bool _wasSignedIn = false;
+  bool _checkingCloud = false;
 
   /// Offers a one-time sign-in prompt on launch when the cloud is configured but
   /// no session is active. Skippable — the app is fully usable locally.
@@ -78,7 +88,89 @@ class _StartupGateState extends State<StartupGate> {
   @override
   void initState() {
     super.initState();
+    widget.auth.addListener(_onAuthChanged);
     _connect();
+  }
+
+  @override
+  void dispose() {
+    widget.auth.removeListener(_onAuthChanged);
+    super.dispose();
+  }
+
+  /// Runs the cloud-freshness check whenever the user becomes signed in.
+  void _onAuthChanged() {
+    final signedIn = widget.auth.isSignedIn;
+    if (signedIn && !_wasSignedIn) _maybeOfferRestore();
+    _wasSignedIn = signedIn;
+  }
+
+  /// If the cloud backup is newer than this device's last sync (edited on
+  /// another device since), offers to restore it. Silent on any failure —
+  /// this is an opportunistic check, not a gate.
+  Future<void> _maybeOfferRestore() async {
+    if (_checkingCloud) return;
+    _checkingCloud = true;
+    try {
+      final meta = await widget.backup.fetchMeta();
+      if (!await widget.backup.cloudIsNewer(meta)) return;
+      if (!mounted) return;
+      final go = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Newer cloud backup found'),
+          content: Text(
+            'Your cloud backup was updated from another device '
+            '(${meta!.device}, ${_formatWhen(meta.updatedAt)} — '
+            '${meta.cards} cards, ${meta.decks} decks).\n\n'
+            'Replace the collection and decks on this device with it?',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Not now'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Restore'),
+            ),
+          ],
+        ),
+      );
+      if (go != true || !mounted) return;
+      final messenger = ScaffoldMessenger.of(context);
+      try {
+        await widget.backup.restore();
+        await widget.store.load();
+        await widget.deckStore.load();
+        // The restored cards may be new to this device — fetch their images.
+        unawaited(CardImageCache.warm(DatabaseService.instance));
+        messenger.showSnackBar(
+          const SnackBar(content: Text('Restored from cloud backup.')),
+        );
+      } catch (e) {
+        messenger.showSnackBar(
+          SnackBar(content: Text('Restore failed: $e')),
+        );
+      }
+    } catch (_) {
+      // No network / no backup — nothing to offer.
+    } finally {
+      _checkingCloud = false;
+    }
+  }
+
+  /// "Jul 22, 3:14 PM" without pulling in an i18n dependency.
+  static String _formatWhen(DateTime utc) {
+    final d = utc.toLocal();
+    const months = [
+      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+    ];
+    final hour12 = d.hour % 12 == 0 ? 12 : d.hour % 12;
+    final minute = d.minute.toString().padLeft(2, '0');
+    final ampm = d.hour < 12 ? 'AM' : 'PM';
+    return '${months[d.month - 1]} ${d.day}, $hour12:$minute $ampm';
   }
 
   /// Initializes the database, loads the stores, and restores any cloud
@@ -94,6 +186,10 @@ class _StartupGateState extends State<StartupGate> {
       if (FirebaseConfig.isConfigured) {
         await widget.auth.restore();
       }
+      // Fill in any card images missing from the on-disk cache, in the
+      // background — a fresh device downloads its collection's images
+      // without any user action.
+      unawaited(CardImageCache.warm(DatabaseService.instance));
       if (mounted) setState(() => _status = _Status.ready);
     } catch (e) {
       if (mounted) {
@@ -121,6 +217,7 @@ class _StartupGateState extends State<StartupGate> {
           deckStore: widget.deckStore,
           auth: widget.auth,
           groups: widget.groups,
+          backup: widget.backup,
         );
       case _Status.connecting:
         return const Scaffold(

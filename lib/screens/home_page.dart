@@ -1,9 +1,12 @@
+import 'dart:async' show unawaited;
 import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
 import '../services/auth_service.dart';
+import '../services/card_image_cache.dart';
+import '../services/cloud_backup_service.dart';
 import '../services/collection_store.dart';
 import '../services/csv_export_service.dart';
 import '../services/database_service.dart';
@@ -20,7 +23,17 @@ import 'import_tab.dart';
 enum _ExportFormat { standard, moxfield }
 
 /// Entries in the compact (phone) top-bar overflow menu.
-enum _OverflowAction { refreshPrices, exportStandard, exportMoxfield, about }
+enum _OverflowAction {
+  refreshPrices,
+  exportStandard,
+  exportMoxfield,
+  backupNow,
+  restoreCloud,
+  about,
+}
+
+/// Entries in the wide layout's cloud menu.
+enum _CloudAction { backupNow, restoreCloud }
 
 /// The main three-tab screen shown once the database connection is established.
 class HomePage extends StatelessWidget {
@@ -30,6 +43,7 @@ class HomePage extends StatelessWidget {
     required this.deckStore,
     required this.auth,
     required this.groups,
+    required this.backup,
   });
 
   // Shared services used across the tabs and top-bar actions.
@@ -37,6 +51,80 @@ class HomePage extends StatelessWidget {
   final DeckStore deckStore;
   final AuthService auth;
   final GroupService groups;
+  final CloudBackupService backup;
+
+  /// Manually pushes a snapshot to the cloud, reporting via SnackBar.
+  Future<void> _backupNow(BuildContext context) async {
+    final messenger = ScaffoldMessenger.of(context);
+    if (!auth.isSignedIn) {
+      messenger.showSnackBar(
+        const SnackBar(content: Text('Sign in first to back up.')),
+      );
+      return;
+    }
+    try {
+      await backup.push(force: true);
+      messenger.showSnackBar(
+        const SnackBar(content: Text('Collection backed up to the cloud.')),
+      );
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text('Backup failed: $e')));
+    }
+  }
+
+  /// Confirms and restores the cloud snapshot, replacing this device's data.
+  Future<void> _restoreFromCloud(BuildContext context) async {
+    final messenger = ScaffoldMessenger.of(context);
+    if (!auth.isSignedIn) {
+      messenger.showSnackBar(
+        const SnackBar(content: Text('Sign in first to restore.')),
+      );
+      return;
+    }
+    try {
+      final meta = await backup.fetchMeta();
+      if (meta == null) {
+        messenger.showSnackBar(
+          const SnackBar(content: Text('No cloud backup exists yet.')),
+        );
+        return;
+      }
+      if (!context.mounted) return;
+      final go = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Restore from cloud?'),
+          content: Text(
+            'Cloud backup from ${meta.device}: ${meta.cards} cards, '
+            '${meta.decks} decks.\n\nThis replaces the collection, folders, '
+            'and decks on this device.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Restore'),
+            ),
+          ],
+        ),
+      );
+      if (go != true) return;
+      await backup.restore();
+      await store.load();
+      await deckStore.load();
+      // The restored cards may be new to this device — fetch their images in
+      // the background so the collection renders offline later.
+      unawaited(CardImageCache.warm(DatabaseService.instance));
+      messenger.showSnackBar(
+        const SnackBar(content: Text('Restored from cloud backup.')),
+      );
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text('Restore failed: $e')));
+    }
+  }
 
   /// Builds the CSV for [format], prompts for a save location, and writes it,
   /// reporting success/failure via a SnackBar. No-op if the collection is empty
@@ -228,6 +316,10 @@ class HomePage extends StatelessWidget {
                       _export(context, _ExportFormat.standard);
                     case _OverflowAction.exportMoxfield:
                       _export(context, _ExportFormat.moxfield);
+                    case _OverflowAction.backupNow:
+                      _backupNow(context);
+                    case _OverflowAction.restoreCloud:
+                      _restoreFromCloud(context);
                     case _OverflowAction.about:
                       _showAbout(context);
                   }
@@ -245,6 +337,16 @@ class HomePage extends StatelessWidget {
                     value: _OverflowAction.exportMoxfield,
                     child: Text('Export to Moxfield CSV'),
                   ),
+                  if (FirebaseConfig.isConfigured) ...[
+                    const PopupMenuItem(
+                      value: _OverflowAction.backupNow,
+                      child: Text('Back up to cloud'),
+                    ),
+                    const PopupMenuItem(
+                      value: _OverflowAction.restoreCloud,
+                      child: Text('Restore from cloud…'),
+                    ),
+                  ],
                   const PopupMenuItem(
                     value: _OverflowAction.about,
                     child: Text('About'),
@@ -282,6 +384,29 @@ class HomePage extends StatelessWidget {
                   ),
                 ],
               ),
+              if (FirebaseConfig.isConfigured)
+                PopupMenuButton<_CloudAction>(
+                  tooltip: 'Cloud backup',
+                  icon: const Icon(Icons.cloud_sync),
+                  onSelected: (a) {
+                    switch (a) {
+                      case _CloudAction.backupNow:
+                        _backupNow(context);
+                      case _CloudAction.restoreCloud:
+                        _restoreFromCloud(context);
+                    }
+                  },
+                  itemBuilder: (_) => const [
+                    PopupMenuItem(
+                      value: _CloudAction.backupNow,
+                      child: Text('Back up to cloud'),
+                    ),
+                    PopupMenuItem(
+                      value: _CloudAction.restoreCloud,
+                      child: Text('Restore from cloud…'),
+                    ),
+                  ],
+                ),
               Padding(
                 padding: const EdgeInsets.only(right: 8),
                 child: Tooltip(

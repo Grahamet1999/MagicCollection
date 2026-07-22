@@ -1,7 +1,11 @@
 import 'package:flutter/material.dart';
 
+import '../services/card_image_cache.dart';
+
 /// Displays a card image from a network [url], with graceful loading and
-/// fallback states so the UI never shows a broken image.
+/// fallback states so the UI never shows a broken image. Images read through
+/// [CardImageCache]: once fetched they render from disk, so the collection
+/// stays visible offline and when Scryfall is down.
 ///
 /// On desktop, hovering the image pops a large floating preview of the full
 /// (uncropped) card — handy for the small thumbnails in lists and grids. Turn
@@ -92,7 +96,13 @@ class _CardImageState extends State<CardImage> {
             ),
             child: ClipRRect(
               borderRadius: BorderRadius.circular(10),
-              child: Image.network(widget.url!, fit: BoxFit.contain),
+              child: Image(
+                // By hover time the thumbnail has usually cached the file;
+                // fall back to the network if not.
+                image: CardImageCache.cachedProviderSync(widget.url!) ??
+                    NetworkImage(widget.url!),
+                fit: BoxFit.contain,
+              ),
             ),
           ),
         ),
@@ -132,28 +142,51 @@ class _CardImageState extends State<CardImage> {
 
     if (!_hasImage) return placeholder;
 
+    final loading = SizedBox(
+      width: widget.width,
+      height: widget.height,
+      child: const Center(
+        child: SizedBox(
+          width: 18,
+          height: 18,
+          child: CircularProgressIndicator(strokeWidth: 2),
+        ),
+      ),
+    );
+
+    // Fast path: already on disk — render synchronously, no spinner frame.
+    final cached = CardImageCache.cachedProviderSync(widget.url!);
+    if (cached != null) {
+      return ClipRRect(
+        borderRadius: BorderRadius.circular(6),
+        child: Image(
+          image: cached,
+          width: widget.width,
+          height: widget.height,
+          fit: BoxFit.cover,
+          errorBuilder: (context, error, stack) => placeholder,
+        ),
+      );
+    }
+
+    // Slow path: fetch through the cache (downloads and stores the file the
+    // first time this printing is ever displayed on this device).
     return ClipRRect(
       borderRadius: BorderRadius.circular(6),
-      child: Image.network(
-        widget.url!,
-        width: widget.width,
-        height: widget.height,
-        fit: BoxFit.cover,
-        loadingBuilder: (context, child, progress) {
-          if (progress == null) return child;
-          return SizedBox(
+      child: FutureBuilder<ImageProvider>(
+        future: CardImageCache.resolve(widget.url!),
+        builder: (context, snapshot) {
+          if (snapshot.hasError) return placeholder;
+          final provider = snapshot.data;
+          if (provider == null) return loading;
+          return Image(
+            image: provider,
             width: widget.width,
             height: widget.height,
-            child: const Center(
-              child: SizedBox(
-                width: 18,
-                height: 18,
-                child: CircularProgressIndicator(strokeWidth: 2),
-              ),
-            ),
+            fit: BoxFit.cover,
+            errorBuilder: (context, error, stack) => placeholder,
           );
         },
-        errorBuilder: (context, error, stack) => placeholder,
       ),
     );
   }
