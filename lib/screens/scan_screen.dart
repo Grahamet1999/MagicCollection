@@ -42,6 +42,9 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
 
   _Phase _phase = _Phase.scanning;
   bool _busy = false;
+
+  /// One-shot log of the actual analysis-stream resolution (diagnostics).
+  bool _frameLogged = false;
   DateTime _lastProcessed = DateTime.fromMillisecondsSinceEpoch(0);
 
   /// Detection awaiting confirmation by a second consecutive frame.
@@ -68,6 +71,28 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
 
   bool _torchOn = false;
   String? _cameraError;
+
+  /// Focus/exposure lock for scanner rigs (phone mounted above a tray at a
+  /// fixed distance): once locked, cards land already in focus with no AF
+  /// hunting between feeds.
+  bool _afLocked = false;
+
+  /// Movable/resizable guide box: normalized center and width (fractions of
+  /// the preview). Detection bands follow the guide, so the user can drag it
+  /// over a card in a box instead of bringing the card to the center.
+  /// Persisted across sessions.
+  Offset _guideCenter = const Offset(0.5, 0.5);
+  double _guideWidthFactor = 0.8;
+  static const _guidePrefX = 'scan_guide_cx';
+  static const _guidePrefY = 'scan_guide_cy';
+  static const _guidePrefW = 'scan_guide_w';
+
+  /// The guide rect in normalized (0..1) preview coordinates, recomputed on
+  /// layout; the frame parser uses it to place the title/collector bands.
+  Rect _guideRectNorm = const Rect.fromLTWH(0.1, 0.25, 0.8, 0.5);
+
+  /// Gesture-start width, for pinch resizing.
+  double _scaleStartWidth = 0.8;
 
   /// Auto-add mode: collector-line (exact printing) matches are added without
   /// the confirm tap. Name-fallback matches always confirm — fuzzy matches
@@ -100,9 +125,24 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
     _initCamera();
     SharedPreferences.getInstance().then((prefs) {
       if (mounted) {
-        setState(() => _autoAdd = prefs.getBool(_autoAddPrefKey) ?? false);
+        setState(() {
+          _autoAdd = prefs.getBool(_autoAddPrefKey) ?? false;
+          _guideCenter = Offset(
+            (prefs.getDouble(_guidePrefX) ?? 0.5).clamp(0.1, 0.9),
+            (prefs.getDouble(_guidePrefY) ?? 0.5).clamp(0.1, 0.9),
+          );
+          _guideWidthFactor =
+              (prefs.getDouble(_guidePrefW) ?? 0.8).clamp(0.4, 0.95);
+        });
       }
     });
+  }
+
+  Future<void> _saveGuide() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setDouble(_guidePrefX, _guideCenter.dx);
+    await prefs.setDouble(_guidePrefY, _guideCenter.dy);
+    await prefs.setDouble(_guidePrefW, _guideWidthFactor);
   }
 
   Future<void> _setAutoAdd(bool value) async {
@@ -141,10 +181,12 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
         (c) => c.lensDirection == CameraLensDirection.back,
         orElse: () => cameras.first,
       );
-      // High resolution so the tiny collector line has enough pixels to OCR.
+      // Maximum resolution so the tiny collector line has enough pixels to
+      // OCR even when the card is small in frame (the plugin negotiates down
+      // on devices that can't stream this large).
       final controller = CameraController(
         back,
-        ResolutionPreset.veryHigh,
+        ResolutionPreset.ultraHigh,
         enableAudio: false,
         imageFormatGroup:
             Platform.isAndroid ? ImageFormatGroup.nv21 : ImageFormatGroup.bgra8888,
@@ -156,9 +198,49 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
       }
       _controller = controller;
       await controller.startImageStream(_onFrame);
+      // Aim autofocus/metering at the guide box rather than the whole scene
+      // (a dark deck box or rig tray otherwise skews both).
+      await _applyFocusPoint();
+      if (_afLocked) await _applyAfLock(true);
       setState(() => _cameraError = null);
     } catch (e) {
       if (mounted) setState(() => _cameraError = e.toString());
+    }
+  }
+
+  /// Points focus + exposure metering at the center of the guide box.
+  Future<void> _applyFocusPoint() async {
+    final controller = _controller;
+    if (controller == null || !controller.value.isInitialized) return;
+    try {
+      final p = Offset(
+        _guideRectNorm.center.dx.clamp(0.05, 0.95),
+        _guideRectNorm.center.dy.clamp(0.05, 0.95),
+      );
+      await controller.setFocusPoint(p);
+      await controller.setExposurePoint(p);
+    } catch (_) {
+      // Not supported on every device — autofocus still works, just unaimed.
+    }
+  }
+
+  Future<void> _applyAfLock(bool lock) async {
+    final controller = _controller;
+    if (controller == null || !controller.value.isInitialized) return;
+    await controller.setFocusMode(lock ? FocusMode.locked : FocusMode.auto);
+    await controller
+        .setExposureMode(lock ? ExposureMode.locked : ExposureMode.auto);
+  }
+
+  Future<void> _toggleAfLock() async {
+    try {
+      await _applyAfLock(!_afLocked);
+      setState(() => _afLocked = !_afLocked);
+      _showHint(_afLocked
+          ? 'Focus & exposure locked — great for mounted scanning.'
+          : 'Focus & exposure back to automatic.');
+    } catch (_) {
+      _showHint('Focus lock not supported on this device.');
     }
   }
 
@@ -179,8 +261,33 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
     try {
       final input = _inputImageFrom(image);
       if (input == null) return;
+      if (!_frameLogged) {
+        _frameLogged = true;
+        debugPrint('scan: analysis frame ${image.width}x${image.height}');
+      }
       final recognized = await _recognizer.processImage(input);
       var det = _parse(recognized, _uprightSize(input));
+      final sawAnyText = recognized.blocks.isNotEmpty;
+      // The exact printing (collector line) always gets its best shot before
+      // a name-only result is accepted: ML Kit downscales full frames
+      // internally, which crushes the tiny collector print, so the zoomed
+      // guide-crop pass runs both to *upgrade* a name-only detection and to
+      // rescue a frame with no detection at all.
+      if (det?.setCode == null && sawAnyText) {
+        final zoomed = await _tryZoomed(image, input);
+        if (zoomed != null) {
+          det = _Detection(
+            setCode: zoomed.setCode,
+            number: zoomed.number,
+            name: det?.name ?? zoomed.name,
+            foil: zoomed.foil,
+          );
+        }
+      }
+      // Card fed upside down (ramp rigs): re-OCR the guide region rotated
+      // 180°. Runs even when no text was seen — upside-down text is often
+      // invisible to the recognizer entirely.
+      det ??= await _tryFlipped(image, input);
       // Tilted card (lying in a pile): if the upright pass found nothing but
       // saw tilted text, deskew the frame to that text's angle and retry.
       det ??= await _tryDeskewed(image, input, recognized);
@@ -260,6 +367,118 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
     return rotated
         ? Size(meta.size.height, meta.size.width)
         : meta.size;
+  }
+
+  // ---- Zoom recovery -------------------------------------------------------
+
+  /// Recovers a card whose collector line is too small for the full-frame
+  /// pass (ML Kit downscales large inputs internally, crushing tiny print):
+  /// crops the guide region out of the frame's luma, upscales it, and re-runs
+  /// OCR on just that. Collector-only: a stray rules-text line in the crop
+  /// must never be mistaken for a card name.
+  Future<_Detection?> _tryZoomed(CameraImage image, InputImage input) async {
+    final zoomed = _zoomedInputImage(image, input, _guideRectNorm);
+    if (zoomed == null) return null;
+    final recognized = await _recognizer.processImage(zoomed.$1);
+    return _parse(recognized, zoomed.$2, relaxed: true, collectorOnly: true);
+  }
+
+  /// Recovers a card fed upside down (common with ramp-style scanner rigs):
+  /// re-OCRs the whole guide region rotated 180°. The crop enforces the
+  /// guide region, so the parse runs relaxed.
+  Future<_Detection?> _tryFlipped(CameraImage image, InputImage input) async {
+    final flipped =
+        _zoomedInputImage(image, input, _guideRectNorm, flip: true);
+    if (flipped == null) return null;
+    final recognized = await _recognizer.processImage(flipped.$1);
+    return _parse(recognized, flipped.$2, relaxed: true);
+  }
+
+  /// Builds an upright grayscale NV21 image of the guide region at up to 2×
+  /// scale (nearest-neighbor from the raw luma, folding the sensor rotation
+  /// into the same pass). [flip] additionally rotates the crop 180°, for
+  /// cards fed upside down. Returns null when the crop would be degenerate.
+  (InputImage, Size)? _zoomedInputImage(
+    CameraImage image,
+    InputImage input,
+    Rect guideNorm, {
+    bool flip = false,
+  }) {
+    final meta = input.metadata!;
+    final deg = switch (meta.rotation) {
+      InputImageRotation.rotation0deg => 0,
+      InputImageRotation.rotation90deg => 90,
+      InputImageRotation.rotation180deg => 180,
+      InputImageRotation.rotation270deg => 270,
+    };
+    final wb = image.width;
+    final hb = image.height;
+    final plane = image.planes.first;
+    final stride = plane.bytesPerRow;
+    final src = plane.bytes;
+    final swap = deg == 90 || deg == 270;
+    final uw = swap ? hb : wb; // upright frame dims
+    final uh = swap ? wb : hb;
+
+    // Crop rect in upright pixels, with a small margin around the guide.
+    var left = ((guideNorm.left - 0.03) * uw).floor().clamp(0, uw - 1);
+    var top = ((guideNorm.top - 0.03) * uh).floor().clamp(0, uh - 1);
+    var right = ((guideNorm.right + 0.03) * uw).ceil().clamp(0, uw);
+    var bottom = ((guideNorm.bottom + 0.03) * uh).ceil().clamp(0, uh);
+    final cw = right - left;
+    final ch = bottom - top;
+    if (cw < 64 || ch < 64) return null;
+
+    // 2× upscale, capped so the OCR input stays a sane size. NV21 wants even
+    // dimensions. A flipped pass is worthwhile even without upscaling.
+    final scale =
+        math.min(2.0, math.min(3840 / cw, 3840 / ch)).clamp(1.0, 2.0);
+    if (!flip && scale <= 1.05) return null; // nothing to gain
+    final w = ((cw * scale).floor()) & ~1;
+    final h = ((ch * scale).floor()) & ~1;
+
+    final out = Uint8List(w * h + (w * h) ~/ 2);
+    out.fillRange(w * h, out.length, 128); // neutral chroma
+    var i = 0;
+    for (var y = 0; y < h; y++) {
+      final uy =
+          flip ? bottom - 1 - (y ~/ scale) : top + y ~/ scale;
+      for (var x = 0; x < w; x++, i++) {
+        final ux =
+            flip ? right - 1 - (x ~/ scale) : left + x ~/ scale;
+        final int bx;
+        final int by;
+        switch (deg) {
+          case 90:
+            bx = uy;
+            by = hb - 1 - ux;
+          case 180:
+            bx = wb - 1 - ux;
+            by = hb - 1 - uy;
+          case 270:
+            bx = wb - 1 - uy;
+            by = ux;
+          default:
+            bx = ux;
+            by = uy;
+        }
+        out[i] = src[by * stride + bx];
+      }
+    }
+
+    final size = Size(w.toDouble(), h.toDouble());
+    return (
+      InputImage.fromBytes(
+        bytes: out,
+        metadata: InputImageMetadata(
+          size: size,
+          rotation: InputImageRotation.rotation0deg,
+          format: InputImageFormat.nv21,
+          bytesPerRow: w,
+        ),
+      ),
+      size,
+    );
   }
 
   // ---- Tilt recovery -------------------------------------------------------
@@ -396,21 +615,41 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
     'PH', 'LA',
   };
 
-  /// Collector number line: optional rarity letter, digits, optional "/total",
-  /// optional promo star — e.g. "0234/0303", "U 0234", "234", "123★".
-  static final _numRe =
-      RegExp(r'^(?:[A-Z]\s+)?0*(\d{1,4})(?:\s*/\s*(\d{1,4}))?\s*[★†]?$');
+  /// Extracts a collector number (and optional "/total") from an OCR line,
+  /// tolerating the classic tiny-print misreads seen in the field: 0↔O,
+  /// 1↔I/l/}/|, 5↔S, 8↔B, and the rarity letter glued to the digits
+  /// ("C 0116" read as "CO116"). Guarded by a "mostly digits" requirement so
+  /// rules/flavor text (e.g. "1ife.") can't produce a number. Returns null
+  /// when the line isn't a plausible collector number.
+  static (String, String?)? _numberFrom(String raw) {
+    final up = raw.toUpperCase().trim();
+    final digits = RegExp(r'\d').allMatches(up).length;
+    if (digits == 0) return null;
+    final alnum = RegExp(r'[A-Z0-9]').allMatches(up).length;
+    if (digits * 2 < alnum) return null; // mostly letters — not a number line
+    final mapped = up
+        .replaceAll('O', '0')
+        .replaceAll('I', '1')
+        .replaceAll('L', '1')
+        .replaceAll('}', '1')
+        .replaceAll('|', '1')
+        .replaceAll('S', '5')
+        .replaceAll('B', '8')
+        .replaceAll(RegExp(r'[^0-9/]'), '');
+    final m =
+        RegExp(r'^0*(\d{1,4})(?:/0*(\d{1,4}))?$').firstMatch(mapped);
+    if (m == null) return null;
+    return (m.group(1)!, m.group(2));
+  }
 
-  /// Set line: set code + separator + language — e.g. "MH3 • EN", "MH3-EN".
-  /// Foil printings use a star as the separator ("ECL ★ EN"), which both
-  /// matches here and marks the card as foil.
+  /// Set code + separator + language — e.g. "MH3 • EN", "MH3-EN", or OCR-fused
+  /// "FINEN". OCR renders the little separator glyph unpredictably (•, ✦, *,
+  /// ¢, …), so any single non-alphanumeric character is accepted. Foil
+  /// printings print a star there, which [_isFoilSep] detects specifically.
+  /// Not anchored: the caller requires the match at line start or after a
+  /// numeric prefix ("C0116 FIN EN" as one OCR line).
   static final _setRe =
-      RegExp(r'^([A-Z0-9]{3,6})\s*([•·∙・.\-★☆✶]?)\s*([A-Z]{2})\b');
-
-  /// Both parts merged into a single OCR line — e.g. "0234/0303 MH3 • EN".
-  static final _combinedRe = RegExp(
-      r'^(?:[A-Z]\s+)?0*(\d{1,4})(?:\s*/\s*(\d{1,4}))?\s*[★†]?\s+'
-      r'([A-Z0-9]{3,6})\s*([•·∙・.\-★☆✶]?)\s*([A-Z]{2})\b');
+      RegExp(r'([A-Z0-9]{3,6})\s*([^A-Z0-9\s]?)\s*([A-Z]{2})\b');
 
   /// True when a matched separator is the foil star.
   static bool _isFoilSep(String? sep) =>
@@ -429,7 +668,12 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
   /// Plausible card-name line for the title fallback.
   static final _nameRe = RegExp(r"^[A-Za-z][A-Za-z'\-,. ]{2,40}$");
 
-  _Detection? _parse(RecognizedText text, Size frame, {bool relaxed = false}) {
+  _Detection? _parse(
+    RecognizedText text,
+    Size frame, {
+    bool relaxed = false,
+    bool collectorOnly = false,
+  }) {
     final lines = <TextLine>[
       for (final block in text.blocks) ...block.lines,
     ];
@@ -439,103 +683,133 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
 
     // Only text inside the on-screen guide box counts, so neighboring cards
     // in frame (a box of cards, a binder page) can't hijack the match. The
-    // guide is centered and spans roughly the middle half of the frame
-    // vertically; the bands below approximate its regions with margin.
-    // [relaxed] (the deskewed-retry path) widens the bands, since a card that
-    // was lying at an angle no longer sits where the guide says.
+    // bands derive from the guide's actual (user-movable) position — the
+    // preview fills the screen, so normalized guide coordinates map straight
+    // onto normalized frame coordinates. [relaxed] (the deskewed-retry path)
+    // widens to most of the frame, since a card that was lying at an angle no
+    // longer sits where the guide says after deskewing.
     final w = frame.width;
     final h = frame.height;
+    final g = _guideRectNorm;
     bool centered(TextLine l) {
       final cx = l.boundingBox.center.dx;
-      final margin = relaxed ? 0.03 : 0.10;
-      return cx > w * margin && cx < w * (1 - margin);
+      if (relaxed) return cx > w * 0.03 && cx < w * 0.97;
+      return cx > w * (g.left - 0.02) && cx < w * (g.right + 0.02);
     }
 
-    // Collector line: the bottom edge of the guide card — below its midpoint
-    // but not beneath the guide (where another card on the table could sit).
-    bool inBottom(TextLine l) {
+    // Collector pair: anywhere inside the guide (the pair's own constraints
+    // carry the precision; a vertical band only loses cards that sit low or
+    // small within the guide).
+    bool inGuide(TextLine l) {
       final cy = l.boundingBox.center.dy;
-      if (relaxed) return centered(l) && cy >= h * 0.35;
-      return centered(l) && cy >= h * 0.50 && cy <= h * 0.85;
+      if (relaxed) return centered(l) && cy > h * 0.02 && cy < h * 0.98;
+      return centered(l) &&
+          cy >= h * (g.top - 0.03) &&
+          cy <= h * (g.bottom + 0.05);
     }
 
-    // Title: the upper band of the guide card — below the guide's top edge,
-    // so a second card peeking above the guide is excluded.
+    // Title: the upper 60% of the guide (generous, since the card may sit
+    // low within it) — still below the guide's top edge, so a second card
+    // peeking above the guide is excluded.
     bool inTitleBand(TextLine l) {
       final cy = l.boundingBox.center.dy;
       if (relaxed) return centered(l) && cy <= h * 0.65;
-      return centered(l) && cy >= h * 0.27 && cy <= h * 0.52;
+      return centered(l) &&
+          cy >= h * (g.top - 0.02) &&
+          cy <= h * (g.top + g.height * 0.6);
     }
 
     var foil = false;
 
-    // Pass 1: both parts merged into one line.
+    // Collector search: collect number-line and set-line candidates inside
+    // the guide, then pair them. A number+set fused into one OCR line
+    // ("C0116 FIN EN") pairs with itself.
+    final numLines = <(TextLine, String)>[];
+    final setLines = <(TextLine, String, bool)>[];
     for (final l in lines) {
-      if (!inBottom(l)) continue;
-      final m = _combinedRe.firstMatch(l.text.trim().toUpperCase());
-      if (m != null &&
-          _langs.contains(m.group(5)) &&
-          _plausibleTotal(m.group(1), m.group(2))) {
-        number = m.group(1);
-        setCode = m.group(3);
-        foil = _isFoilSep(m.group(4));
-        break;
+      if (!inGuide(l)) continue;
+      final up = l.text.trim().toUpperCase();
+      String numSource = up;
+      final sm = _setRe.firstMatch(up);
+      if (sm != null && _langs.contains(sm.group(3))) {
+        final prefix = up.substring(0, sm.start).trim();
+        // Accept the set match at line start, or after a numeric prefix —
+        // never mid-sentence in rules text.
+        if (sm.start == 0 || _numberFrom(prefix) != null) {
+          setLines.add((l, sm.group(1)!, _isFoilSep(sm.group(2))));
+          numSource = prefix; // the number, if any, is what precedes the set
+        }
+      }
+      final n = _numberFrom(numSource);
+      if (n != null && _plausibleTotal(n.$1, n.$2)) {
+        numLines.add((l, n.$1));
+      }
+    }
+    double best = double.infinity;
+    for (final (nl, num) in numLines) {
+      for (final (sl, code, starred) in setLines) {
+        final sameLine = identical(nl, sl);
+        final dy = (sl.boundingBox.top - nl.boundingBox.top).abs();
+        final dx = (sl.boundingBox.left - nl.boundingBox.left).abs();
+        final lineH = nl.boundingBox.height;
+        // Same OCR line (fused number+set), or stacked directly and roughly
+        // left-aligned.
+        final score = sameLine ? -1.0 : dy;
+        final adjacent =
+            sameLine || (dy < lineH * 4 && dx < frame.width * 0.3);
+        if (adjacent && score < best) {
+          best = score;
+          number = num;
+          setCode = code;
+          foil = starred;
+        }
       }
     }
 
-    // Pass 2: number line + set line as separate, vertically adjacent lines.
-    if (number == null) {
-      final numLines = <TextLine>[];
-      final setLines = <(TextLine, String, bool)>[];
+    // Title fallback: among plausible name lines in the title band, take the
+    // TOPMOST of the tall ones — the title prints above the type/rules text
+    // and at a similar or larger size, so "topmost tall line" beats "tallest
+    // line" (rules text can measure taller than the title on some frames).
+    // Skipped for collector-only passes (crops that exclude the title).
+    String? name;
+    if (!collectorOnly) {
+      final candidates = <(TextLine, double)>[];
       for (final l in lines) {
-        if (!inBottom(l)) continue;
-        final t = l.text.trim().toUpperCase();
-        final nm = _numRe.firstMatch(t);
-        if (nm != null && _plausibleTotal(nm.group(1), nm.group(2))) {
-          numLines.add(l);
-        }
-        final m = _setRe.firstMatch(t);
-        if (m != null && _langs.contains(m.group(3))) {
-          setLines.add((l, m.group(1)!, _isFoilSep(m.group(2))));
-        }
+        if (!inTitleBand(l)) continue;
+        final t = l.text.trim();
+        if (!_nameRe.hasMatch(t)) continue;
+        if (!RegExp(r'[aeiouAEIOU]').hasMatch(t)) continue;
+        candidates.add((l, l.boundingBox.height.toDouble()));
       }
-      double best = double.infinity;
-      for (final n in numLines) {
-        for (final (s, code, starred) in setLines) {
-          final dy = (s.boundingBox.top - n.boundingBox.top).abs();
-          final dx = (s.boundingBox.left - n.boundingBox.left).abs();
-          final h = n.boundingBox.height;
-          // Stacked directly (dy small) and left-aligned (dx small).
-          if (dy < h * 4 && dx < frame.width * 0.3 && dy < best) {
-            best = dy;
-            number = _numRe
-                .firstMatch(n.text.trim().toUpperCase())!
-                .group(1);
-            setCode = code;
-            foil = starred;
+      if (candidates.isNotEmpty) {
+        final maxH =
+            candidates.map((c) => c.$2).reduce(math.max);
+        var bestCy = double.infinity;
+        for (final (l, lineH) in candidates) {
+          final cy = l.boundingBox.center.dy;
+          if (lineH >= maxH * 0.8 && cy < bestCy) {
+            bestCy = cy;
+            name = l.text.trim();
           }
         }
-      }
-    }
-
-    // Title fallback: the tallest plausible name line in the guide's title
-    // band.
-    String? name;
-    double nameHeight = 0;
-    for (final l in lines) {
-      if (!inTitleBand(l)) continue;
-      final t = l.text.trim();
-      if (!_nameRe.hasMatch(t)) continue;
-      if (!RegExp(r'[aeiouAEIOU]').hasMatch(t)) continue;
-      if (l.boundingBox.height > nameHeight) {
-        nameHeight = l.boundingBox.height;
-        name = t;
       }
     }
 
     if (number != null && setCode != null) {
       return _Detection(
           setCode: setCode, number: number, name: name, foil: foil);
+    }
+    // Diagnostics: when the collector line didn't parse, log what OCR saw in
+    // the collector band so misreads can be inspected via adb logcat.
+    final seen = [
+      for (final l in lines)
+        if (inGuide(l))
+          '"${l.text}" h=${l.boundingBox.height.round()}',
+    ];
+    if (seen.isNotEmpty) {
+      final tag = collectorOnly ? 'zoom' : (relaxed ? 'relaxed' : 'base');
+      debugPrint('scan[$tag]: no collector match; band saw: '
+          '${seen.take(8).join(' | ')}');
     }
     if (name != null && name.length >= 4) {
       return _Detection(name: name);
@@ -668,6 +942,25 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
       appBar: AppBar(
         title: Text(_addedCount == 0 ? 'Scan cards' : 'Scan cards — $_addedCount added'),
         actions: [
+          IconButton(
+            tooltip: 'Reset scan box to center',
+            icon: const Icon(Icons.filter_center_focus),
+            onPressed: () {
+              setState(() {
+                _guideCenter = const Offset(0.5, 0.5);
+                _guideWidthFactor = 0.8;
+              });
+              _saveGuide();
+              _applyFocusPoint();
+            },
+          ),
+          IconButton(
+            tooltip: _afLocked
+                ? 'Unlock focus & exposure'
+                : 'Lock focus & exposure (for mounted/rig scanning)',
+            icon: Icon(_afLocked ? Icons.lock : Icons.lock_open),
+            onPressed: _toggleAfLock,
+          ),
           // Auto-add: exact (collector-line) matches skip the confirm tap.
           Tooltip(
             message: 'Auto-add exact matches without confirming '
@@ -729,28 +1022,73 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
     );
   }
 
-  /// Card-shaped framing guide. Purely ergonomic — detection runs on the
-  /// whole frame — but it puts the card at a distance where the collector
-  /// line is large enough to OCR.
+  /// Card-shaped framing guide, draggable and pinch-resizable — the detection
+  /// bands follow it, so it can be placed over a card lying anywhere in view
+  /// (e.g. in a deck box) instead of bringing the card to the center. The
+  /// app-bar reset button re-centers it.
   Widget _buildGuide() {
-    return IgnorePointer(
-      child: Center(
-        child: FractionallySizedBox(
-          widthFactor: 0.8,
-          child: AspectRatio(
-            // Magic card aspect ratio (63mm × 88mm).
-            aspectRatio: 63 / 88,
-            child: Container(
-              decoration: BoxDecoration(
-                border: Border.all(
-                  color: Colors.white.withValues(alpha: 0.6),
-                  width: 2,
+    return Positioned.fill(
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final sw = constraints.maxWidth;
+          final sh = constraints.maxHeight;
+          // Guide size in pixels: chosen width, Magic card ratio (63×88mm),
+          // clamped to fit vertically.
+          var w = sw * _guideWidthFactor;
+          var h = w * 88 / 63;
+          if (h > sh * 0.9) {
+            h = sh * 0.9;
+            w = h * 63 / 88;
+          }
+          // Center clamped so the box stays fully on screen.
+          final cx = (_guideCenter.dx * sw).clamp(w / 2, sw - w / 2);
+          final cy = (_guideCenter.dy * sh).clamp(h / 2, sh - h / 2);
+          final rect =
+              Rect.fromCenter(center: Offset(cx, cy), width: w, height: h);
+          // Published for the frame parser (normalized). Assigned without
+          // setState — build is already running.
+          _guideRectNorm = Rect.fromLTWH(
+              rect.left / sw, rect.top / sh, rect.width / sw, rect.height / sh);
+
+          return GestureDetector(
+            behavior: HitTestBehavior.translucent,
+            onScaleStart: (_) => _scaleStartWidth = _guideWidthFactor,
+            onScaleUpdate: (details) {
+              setState(() {
+                _guideCenter = Offset(
+                  (_guideCenter.dx + details.focalPointDelta.dx / sw)
+                      .clamp(0.1, 0.9),
+                  (_guideCenter.dy + details.focalPointDelta.dy / sh)
+                      .clamp(0.1, 0.9),
+                );
+                _guideWidthFactor =
+                    (_scaleStartWidth * details.scale).clamp(0.4, 0.95);
+              });
+            },
+            onScaleEnd: (_) {
+              _saveGuide();
+              _applyFocusPoint();
+            },
+            child: Stack(
+              children: [
+                Positioned.fromRect(
+                  rect: rect,
+                  child: IgnorePointer(
+                    child: Container(
+                      decoration: BoxDecoration(
+                        border: Border.all(
+                          color: Colors.white.withValues(alpha: 0.6),
+                          width: 2,
+                        ),
+                        borderRadius: BorderRadius.circular(16),
+                      ),
+                    ),
+                  ),
                 ),
-                borderRadius: BorderRadius.circular(16),
-              ),
+              ],
             ),
-          ),
-        ),
+          );
+        },
       ),
     );
   }
