@@ -23,6 +23,18 @@ void main() {
       expect(advice.forName('the dawning archaic')?.verdict, 'keep');
     });
 
+    test('parses the free-tier remaining count when present', () {
+      final withRemaining = CritiqueAdvice.fromJson({
+        'overall': 'ok',
+        'remaining': 7,
+        'verdicts': const [],
+      });
+      expect(withRemaining.remaining, 7);
+      // BYOK responses omit it → null (unlimited).
+      final byok = CritiqueAdvice.fromJson({'overall': 'ok', 'verdicts': const []});
+      expect(byok.remaining, isNull);
+    });
+
     test('forName is case-insensitive and returns null when absent', () {
       final advice = CritiqueAdvice.fromJson({
         'overall': '',

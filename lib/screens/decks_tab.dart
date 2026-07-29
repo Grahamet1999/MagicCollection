@@ -9,6 +9,7 @@ import '../models/deck_card.dart';
 import '../models/scryfall_parse.dart';
 import '../services/database_service.dart';
 import '../services/app_settings.dart';
+import '../services/auth_service.dart';
 import '../services/commander_rules.dart';
 import '../services/deck_advisor_service.dart';
 import '../services/deck_analyzer.dart';
@@ -73,9 +74,10 @@ typedef _CardGroup = ({String label, List<DeckCard> cards});
 /// (commander, mainboard grouped by type, sideboard), stats, mana curve, and a
 /// Scryfall add panel filtered to the commander's color identity.
 class DecksTab extends StatefulWidget {
-  const DecksTab({super.key, required this.store});
+  const DecksTab({super.key, required this.store, required this.auth});
 
   final DeckStore store;
+  final AuthService auth;
 
   @override
   State<DecksTab> createState() => _DecksTabState();
@@ -91,7 +93,7 @@ class _DecksTabState extends State<DecksTab> {
   final _edhrec = EdhrecService();
   late final _recommend = RecommendationService(_edhrec);
   late final _critique = DeckCritiqueService(_edhrec, _recommend);
-  final _advisor = DeckAdvisorService();
+  late final _advisor = DeckAdvisorService(widget.auth);
 
   /// True while an EDHREC recommendation fetch is in flight.
   bool _recommending = false;
@@ -1934,6 +1936,15 @@ class _CritiqueSheetState extends State<_CritiqueSheet> {
                                 .colorScheme
                                 .onPrimaryContainer))),
               ]),
+            ),
+          if (_advice?.remaining != null)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 4),
+              child: Text(
+                '${_advice!.remaining} free AI review(s) left this month · '
+                'add your own key (🔑) for unlimited',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
             ),
           if (c.cuts.isEmpty)
             const Padding(

@@ -14,5 +14,13 @@ class FirebaseConfig {
   static const String databaseUrl =
       'https://mtgcollection-1add3-default-rtdb.firebaseio.com';
 
+  /// Region the Cloud Functions are deployed to (see docs/deck_advisor_setup.md).
+  static const String functionsRegion = 'us-central1';
+
+  /// Base URL for HTTPS Cloud Functions, e.g. the shared-tier AI advisor at
+  /// `$functionsBase/deckAdvisor`.
+  static String get functionsBase =>
+      'https://$functionsRegion-$projectId.cloudfunctions.net';
+
   static bool get isConfigured => apiKey.isNotEmpty && databaseUrl.isNotEmpty;
 }

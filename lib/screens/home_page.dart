@@ -441,7 +441,7 @@ class HomePage extends StatelessWidget {
           children: [
             ImportTab(store: store),
             CollectionTab(store: store, deckStore: deckStore),
-            DecksTab(store: deckStore),
+            DecksTab(store: deckStore, auth: auth),
           ],
         ),
       ),

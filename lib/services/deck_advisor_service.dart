@@ -5,7 +5,9 @@ import 'package:http/http.dart' as http;
 import '../models/deck_advice.dart';
 import '../models/deck_card.dart';
 import 'app_settings.dart';
+import 'auth_service.dart';
 import 'deck_critique_service.dart';
+import 'firebase_config.dart';
 
 /// A commander-aware verdict for one card, returned by the AI advisor.
 class CardVerdict {
@@ -35,12 +37,20 @@ class CardVerdict {
   }
 }
 
-/// The AI advisor's response: an overall assessment plus per-card verdicts.
+/// The AI advisor's response: an overall assessment plus per-card verdicts, and
+/// (on the shared free tier) how many free reviews remain this month.
 class CritiqueAdvice {
-  const CritiqueAdvice({required this.overall, required this.verdicts});
+  const CritiqueAdvice({
+    required this.overall,
+    required this.verdicts,
+    this.remaining,
+  });
 
   final String overall;
   final List<CardVerdict> verdicts;
+
+  /// Free shared-tier reviews left this month, or null for BYOK (unlimited).
+  final int? remaining;
 
   /// The verdict for [name] (case-insensitive), or null.
   CardVerdict? forName(String name) {
@@ -55,6 +65,7 @@ class CritiqueAdvice {
     final list = json['verdicts'];
     return CritiqueAdvice(
       overall: json['overall'] as String? ?? '',
+      remaining: (json['remaining'] as num?)?.toInt(),
       verdicts: [
         if (list is List)
           for (final v in list)
@@ -65,20 +76,22 @@ class CritiqueAdvice {
 }
 
 /// Adds natural-language, commander-aware reasoning on top of the deterministic
-/// critique by calling Claude directly (Anthropic Messages API).
+/// critique. Hybrid transport:
 ///
-/// The user's own API key lives in [AppSettings] (on-device, entered by them),
-/// and the call goes straight to `api.anthropic.com` — no backend. This is a
-/// native HTTP client, so CORS doesn't apply. If you'd rather keep the key
-/// off-device, a server proxy would be the alternative.
+/// - **BYOK** — if the user set their own Anthropic key in [AppSettings], calls
+///   `api.anthropic.com` directly (unlimited, their spend, premium model).
+/// - **Shared free tier** — otherwise, if signed in, calls the `deckAdvisor`
+///   Cloud Function, which holds the app owner's key and enforces a per-user
+///   monthly quota. When the quota is exhausted the app nudges the user to BYOK.
 class DeckAdvisorService {
-  DeckAdvisorService({http.Client? client})
+  DeckAdvisorService(this._auth, {http.Client? client})
       : _client = client ?? http.Client();
 
+  final AuthService _auth;
   final http.Client _client;
 
-  static const _endpoint = 'https://api.anthropic.com/v1/messages';
-  static const _model = 'claude-opus-5';
+  static const _anthropicEndpoint = 'https://api.anthropic.com/v1/messages';
+  static const _byokModel = 'claude-opus-5';
 
   static const _systemPrompt =
       "You are an expert Magic: The Gathering Commander (EDH) deckbuilding "
@@ -121,11 +134,20 @@ class DeckAdvisorService {
     'additionalProperties': false,
   };
 
-  /// True when an Anthropic API key is configured.
-  bool get available => AppSettings.instance.hasAnthropicKey;
+  /// True when advice can be requested: the user has their own key (BYOK) or is
+  /// signed in (shared free tier).
+  bool get available =>
+      AppSettings.instance.hasAnthropicKey ||
+      (FirebaseConfig.isConfigured && _auth.isSignedIn);
 
-  /// Asks Claude to review the heuristic [candidates] for a deck with the given
-  /// [commanders] and [analysis], returning keep/cut/flex verdicts.
+  /// True when the shared free tier (not BYOK) would be used for the next call.
+  bool get usingFreeTier =>
+      !AppSettings.instance.hasAnthropicKey &&
+      FirebaseConfig.isConfigured &&
+      _auth.isSignedIn;
+
+  /// Reviews the heuristic [candidates] and returns keep/cut/flex verdicts,
+  /// routing to BYOK or the shared free tier automatically.
   Future<CritiqueAdvice> reviewCuts({
     required List<DeckCard> commanders,
     required String? colorIdentity,
@@ -133,25 +155,37 @@ class DeckAdvisorService {
     required DeckAnalysis analysis,
     required List<CutCandidate> candidates,
   }) async {
-    final key = AppSettings.instance.anthropicKey;
-    if (key == null || key.isEmpty) {
-      throw DeckAdvisorException('Add your Anthropic API key to use AI advice.');
-    }
     if (candidates.isEmpty) {
       throw DeckAdvisorException('Nothing flagged to review.');
     }
-
     final capped = candidates.take(40).toList();
-    final userMessage = _buildUserMessage(
-      commanders: commanders,
-      colorIdentity: colorIdentity,
-      format: format,
-      analysis: analysis,
-      candidates: capped,
-    );
 
+    if (AppSettings.instance.hasAnthropicKey) {
+      return _reviewDirect(
+          commanders, colorIdentity, format, analysis, capped);
+    }
+    if (FirebaseConfig.isConfigured && _auth.isSignedIn) {
+      return _reviewViaProxy(
+          commanders, colorIdentity, format, analysis, capped);
+    }
+    throw DeckAdvisorException(
+        'Sign in for free AI advice, or add your own Anthropic key.');
+  }
+
+  // ---- BYOK: direct to Anthropic ------------------------------------------
+
+  Future<CritiqueAdvice> _reviewDirect(
+    List<DeckCard> commanders,
+    String? colorIdentity,
+    String format,
+    DeckAnalysis analysis,
+    List<CutCandidate> candidates,
+  ) async {
+    final key = AppSettings.instance.anthropicKey!;
+    final userMessage = _buildUserMessage(
+        commanders, colorIdentity, format, analysis, candidates);
     final payload = jsonEncode({
-      'model': _model,
+      'model': _byokModel,
       'max_tokens': 8000,
       'system': _systemPrompt,
       'messages': [
@@ -165,7 +199,7 @@ class DeckAdvisorService {
     final http.Response res;
     try {
       res = await _client.post(
-        Uri.parse(_endpoint),
+        Uri.parse(_anthropicEndpoint),
         headers: {
           'content-type': 'application/json',
           'x-api-key': key,
@@ -176,23 +210,23 @@ class DeckAdvisorService {
     } catch (e) {
       throw DeckAdvisorException('Could not reach the Anthropic API.');
     }
-
     if (res.statusCode != 200) {
-      throw DeckAdvisorException(_messageFor(res));
+      throw DeckAdvisorException(
+          _anthropicError(res) ?? _statusMessage(res.statusCode, byok: true));
     }
+    return _parseAnthropicResponse(res.body);
+  }
 
+  CritiqueAdvice _parseAnthropicResponse(String bodyText) {
     final Map<String, dynamic> body;
     try {
-      body = jsonDecode(res.body) as Map<String, dynamic>;
+      body = jsonDecode(bodyText) as Map<String, dynamic>;
     } catch (_) {
       throw DeckAdvisorException('The AI advisor returned an unexpected reply.');
     }
-
     if (body['stop_reason'] == 'refusal') {
       throw DeckAdvisorException('The request was declined by the safety filter.');
     }
-
-    // With thinking on, a thinking block may precede the JSON text block.
     final content = body['content'];
     String? text;
     if (content is List) {
@@ -203,9 +237,7 @@ class DeckAdvisorService {
         }
       }
     }
-    if (text == null) {
-      throw DeckAdvisorException('No advice was returned.');
-    }
+    if (text == null) throw DeckAdvisorException('No advice was returned.');
     try {
       return CritiqueAdvice.fromJson(jsonDecode(text) as Map<String, dynamic>);
     } catch (_) {
@@ -213,19 +245,93 @@ class DeckAdvisorService {
     }
   }
 
-  String _buildUserMessage({
-    required List<DeckCard> commanders,
-    required String? colorIdentity,
-    required String format,
-    required DeckAnalysis analysis,
-    required List<CutCandidate> candidates,
-  }) {
+  // ---- Shared free tier: via the Cloud Function ---------------------------
+
+  Future<CritiqueAdvice> _reviewViaProxy(
+    List<DeckCard> commanders,
+    String? colorIdentity,
+    String format,
+    DeckAnalysis analysis,
+    List<CutCandidate> candidates,
+  ) async {
+    final token = await _auth.idToken();
+    final payload = jsonEncode({
+      'commanders': [
+        for (final c in commanders)
+          {'name': c.name, 'typeLine': c.typeLine, 'oracleText': c.oracleText},
+      ],
+      'colorIdentity': colorIdentity,
+      'format': format,
+      'analysis': {
+        'lands': analysis.landCount,
+        'recommendedLands': analysis.recommendedLands,
+        'ramp': analysis.rampCount,
+        'draw': analysis.drawCount,
+        'removal': analysis.removalCount,
+        'wipe': analysis.wipeCount,
+        'cheat': analysis.cheatCount,
+        'recursion': analysis.recursionCount,
+        'avgManaValue': analysis.avgManaValue,
+      },
+      'candidates': [
+        for (final c in candidates)
+          {
+            'name': c.card.name,
+            'typeLine': c.card.typeLine,
+            'manaValue': c.card.cmc,
+            'oracleText': c.card.oracleText,
+            'heuristicReason': c.reason,
+          },
+      ],
+    });
+
+    final http.Response res;
+    try {
+      res = await _client.post(
+        Uri.parse('${FirebaseConfig.functionsBase}/deckAdvisor'),
+        headers: {
+          'content-type': 'application/json',
+          'Authorization': 'Bearer $token',
+        },
+        body: payload,
+      );
+    } catch (e) {
+      throw DeckAdvisorException(
+          'Could not reach the AI advisor. Check your connection.');
+    }
+
+    if (res.statusCode == 429) {
+      throw DeckAdvisorException(
+        _proxyError(res) ?? 'Free AI limit reached.',
+        quotaExceeded: true,
+      );
+    }
+    if (res.statusCode != 200) {
+      throw DeckAdvisorException(
+          _proxyError(res) ?? _statusMessage(res.statusCode, byok: false));
+    }
+    try {
+      return CritiqueAdvice.fromJson(
+          jsonDecode(res.body) as Map<String, dynamic>);
+    } catch (_) {
+      throw DeckAdvisorException('The AI advisor returned an unexpected reply.');
+    }
+  }
+
+  // ---- Shared prompt + error helpers --------------------------------------
+
+  String _buildUserMessage(
+    List<DeckCard> commanders,
+    String? colorIdentity,
+    String format,
+    DeckAnalysis analysis,
+    List<CutCandidate> candidates,
+  ) {
     final commanderText = commanders.isEmpty
         ? '(no commander specified)'
         : commanders
             .map((c) => '- ${c.name} [${c.typeLine}]: ${c.oracleText}')
             .join('\n');
-
     final candidateText = candidates.map((c) {
       final card = c.card;
       return '- ${card.name} (MV ${card.cmc.toStringAsFixed(0)}) '
@@ -233,14 +339,12 @@ class DeckAdvisorService {
           '    heuristic flag: ${c.reason}\n'
           '    text: ${card.oracleText.isEmpty ? "(none)" : card.oracleText}';
     }).join('\n');
-
     final a = analysis;
     final snapshot = 'lands ${a.landCount}/~${a.recommendedLands}, '
         'ramp ${a.rampCount}, draw ${a.drawCount}, removal ${a.removalCount}, '
         'wipes ${a.wipeCount}, cheat ${a.cheatCount}, '
         'recursion ${a.recursionCount}, avg MV '
         '${a.avgManaValue.toStringAsFixed(1)}';
-
     return 'Commander(s):\n$commanderText\n\n'
         'Color identity: ${colorIdentity ?? "?"}\n'
         'Format: $format\n'
@@ -251,8 +355,7 @@ class DeckAdvisorService {
         'cards fit the commander, then a verdict and reasoning for each card.';
   }
 
-  /// Extracts Anthropic's error message, else a generic one.
-  String _messageFor(http.Response res) {
+  String? _anthropicError(http.Response res) {
     try {
       final body = jsonDecode(res.body);
       if (body is Map && body['error'] is Map) {
@@ -260,10 +363,24 @@ class DeckAdvisorService {
         if (msg is String && msg.isNotEmpty) return msg;
       }
     } catch (_) {}
-    if (res.statusCode == 401) {
-      return 'Anthropic rejected the API key — check it in AI settings.';
+    return null;
+  }
+
+  String? _proxyError(http.Response res) {
+    try {
+      final body = jsonDecode(res.body);
+      if (body is Map && body['error'] is String) return body['error'] as String;
+    } catch (_) {}
+    return null;
+  }
+
+  String _statusMessage(int code, {required bool byok}) {
+    if (code == 401) {
+      return byok
+          ? 'Anthropic rejected the API key — check it in AI settings.'
+          : 'Please sign in again to use AI advice.';
     }
-    return 'AI advisor request failed (HTTP ${res.statusCode}).';
+    return 'AI advisor request failed (HTTP $code).';
   }
 
   void dispose() => _client.close();
@@ -271,8 +388,12 @@ class DeckAdvisorService {
 
 /// A user-facing error from the AI advisor.
 class DeckAdvisorException implements Exception {
-  DeckAdvisorException(this.message);
+  DeckAdvisorException(this.message, {this.quotaExceeded = false});
   final String message;
+
+  /// True when the shared free-tier monthly quota is exhausted (offer BYOK).
+  final bool quotaExceeded;
+
   @override
   String toString() => message;
 }
