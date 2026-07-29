@@ -83,11 +83,29 @@ class RecommendationService {
   }) async {
     final data = await _edhrec.getCommanders(commanderNames);
     if (data == null) return null;
+    return rankFrom(
+      data,
+      commanderLabel: commanderNames.join(' + '),
+      isOwned: isOwned,
+      excludeNames: {
+        ...excludeNames,
+        ...commanderNames,
+      },
+      limit: limit,
+    );
+  }
 
-    final excluded = {
-      ...excludeNames.map((e) => e.toLowerCase()),
-      ...commanderNames.map((e) => e.toLowerCase()),
-    };
+  /// Ranks already-fetched EDHREC [data] into the hybrid pools, without a network
+  /// call. Shared by [forCommanders] and the deck critique so a single EDHREC
+  /// fetch powers both the "adds" list and the cut-ranking inclusion map.
+  RecommendationResult rankFrom(
+    EdhrecCommander data, {
+    required String commanderLabel,
+    required bool Function(String nameLower) isOwned,
+    Set<String> excludeNames = const {},
+    int limit = 60,
+  }) {
+    final excluded = excludeNames.map((e) => e.toLowerCase()).toSet();
 
     // Dedupe by name, keeping the first (highest-priority) category EDHREC lists
     // the card under.
@@ -113,7 +131,7 @@ class RecommendationService {
       ..sort((a, b) => b.inclusion.compareTo(a.inclusion));
 
     return RecommendationResult(
-      commanderName: commanderNames.join(' + '),
+      commanderName: commanderLabel,
       ownedOnly: ownedOnly.take(limit).toList(),
       all: all.take(limit).toList(),
     );

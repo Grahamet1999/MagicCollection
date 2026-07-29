@@ -8,10 +8,13 @@ import '../models/deck_advice.dart';
 import '../models/deck_card.dart';
 import '../models/scryfall_parse.dart';
 import '../services/database_service.dart';
+import '../services/commander_rules.dart';
 import '../services/deck_analyzer.dart';
+import '../services/deck_critique_service.dart';
 import '../services/deck_csv_export_service.dart';
 import '../services/deck_csv_import_service.dart';
 import '../services/deck_store.dart';
+import '../services/decklist_parser.dart';
 import '../services/edhrec_service.dart';
 import '../services/recommendation_service.dart';
 import '../services/scryfall_service.dart';
@@ -85,6 +88,7 @@ class _DecksTabState extends State<DecksTab> {
   /// EDHREC-backed card recommendations for the deck's commander.
   final _edhrec = EdhrecService();
   late final _recommend = RecommendationService(_edhrec);
+  late final _critique = DeckCritiqueService(_edhrec, _recommend);
 
   /// True while an EDHREC recommendation fetch is in flight.
   bool _recommending = false;
@@ -508,6 +512,15 @@ class _DecksTabState extends State<DecksTab> {
         label: const Text('Export CSV'),
       ),
     );
+    final critiqueListButton = Tooltip(
+      message: 'Paste any decklist to get cut/add feedback (does not modify '
+          'this deck).',
+      child: OutlinedButton.icon(
+        onPressed: () => _showCritiqueListDialog(context),
+        icon: const Icon(Icons.fact_check_outlined),
+        label: const Text('Critique a list…'),
+      ),
+    );
     final formatControl = Row(
       mainAxisSize: MainAxisSize.min,
       children: [
@@ -537,7 +550,12 @@ class _DecksTabState extends State<DecksTab> {
             spacing: 8,
             runSpacing: 8,
             crossAxisAlignment: WrapCrossAlignment.center,
-            children: [importButton, exportButton, formatControl],
+            children: [
+              importButton,
+              exportButton,
+              critiqueListButton,
+              formatControl
+            ],
           ),
         ],
       );
@@ -553,6 +571,8 @@ class _DecksTabState extends State<DecksTab> {
         importButton,
         const SizedBox(width: 8),
         exportButton,
+        const SizedBox(width: 8),
+        critiqueListButton,
         const SizedBox(width: 16),
         formatControl,
       ],
@@ -613,6 +633,11 @@ class _DecksTabState extends State<DecksTab> {
                         : const Icon(Icons.auto_awesome),
                     label: const Text('Recommend cards'),
                   ),
+                ),
+                OutlinedButton.icon(
+                  onPressed: () => _showCritique(context),
+                  icon: const Icon(Icons.rule),
+                  label: const Text('Critique'),
                 ),
               ],
             ),
@@ -680,6 +705,205 @@ class _DecksTabState extends State<DecksTab> {
     } catch (e) {
       _showSnack(e.toString());
     }
+  }
+
+  /// Critiques the currently-open deck (cuts + adds + analysis), backfilling
+  /// oracle text first if needed. Adds tap through to the deck.
+  Future<void> _showCritique(BuildContext context) async {
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const Center(child: CircularProgressIndicator()),
+    );
+    DeckCritique? result;
+    try {
+      final deckId = store.selectedDeckId;
+      if (deckId != null &&
+          !_detailsBackfilled.contains(deckId) &&
+          store.allCards.any((c) => c.oracleText.isEmpty)) {
+        try {
+          await store.backfillSelectedDeckDetails();
+        } catch (_) {}
+        _detailsBackfilled.add(deckId);
+      }
+      result = await _critique.critique(
+        mainboard: store.mainboard,
+        commanders: store.commanders,
+        commanderColorIdentity: store.commanderColorIdentity,
+        isOwned: (nameLower) => store.ownedCount(nameLower) > 0,
+        profile: DeckFormatProfile.forFormat(store.format),
+      );
+    } catch (e) {
+      if (context.mounted) Navigator.of(context).pop();
+      _showSnack(e.toString());
+      return;
+    }
+    if (context.mounted) Navigator.of(context).pop(); // spinner
+    if (!context.mounted) return;
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (ctx) => _CritiqueSheet(
+        critique: result!,
+        title: store.selectedDeck?.name ?? 'Deck',
+        onAdd: _addByName,
+      ),
+    );
+  }
+
+  /// Prompts for a pasted decklist (and optional commander) to critique without
+  /// touching the current deck.
+  Future<void> _showCritiqueListDialog(BuildContext context) async {
+    final listController = TextEditingController();
+    final commanderController = TextEditingController();
+    final submit = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Critique a list'),
+        content: SizedBox(
+          width: 460,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: commanderController,
+                decoration: const InputDecoration(
+                  labelText: 'Commander(s) — optional, for recommendations',
+                  hintText: 'e.g. Atraxa, Praetors\' Voice',
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: listController,
+                minLines: 8,
+                maxLines: 16,
+                decoration: const InputDecoration(
+                  labelText: 'Decklist',
+                  hintText: '1 Sol Ring\n1 Cultivate\n10 Forest\n…',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Critique')),
+        ],
+      ),
+    );
+    final listText = listController.text;
+    final commanderText = commanderController.text;
+    listController.dispose();
+    commanderController.dispose();
+    if (submit != true || !context.mounted) return;
+    await _runListCritique(context, listText, commanderText);
+  }
+
+  /// Parses [listText], resolves it against Scryfall, and critiques it. Any
+  /// commander name(s) in [commanderText] (comma / `//` / `+` separated) drive
+  /// the EDHREC-backed cut signal and add recommendations.
+  Future<void> _runListCritique(
+    BuildContext context,
+    String listText,
+    String commanderText,
+  ) async {
+    final parsed = DecklistParser.parse(listText);
+    if (parsed.isEmpty) {
+      _showSnack('No cards found in the list.');
+      return;
+    }
+    final commanderNames = commanderText
+        .split(RegExp(r'\s*(//|,|\+)\s*'))
+        .map((s) => s.trim())
+        .where((s) => s.isNotEmpty)
+        .toList();
+
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const Center(child: CircularProgressIndicator()),
+    );
+
+    DeckCritique? result;
+    String? note;
+    String title = 'Pasted list';
+    try {
+      final identifiers = <Map<String, String>>[
+        for (final p in parsed) {'name': p.name},
+        for (final n in commanderNames) {'name': n},
+      ];
+      final res = await _scryfall.getCollection(identifiers);
+      final byName = <String, Map<String, dynamic>>{};
+      for (final j in res.found) {
+        final n = (j['name'] as String? ?? '').toLowerCase();
+        if (n.isNotEmpty) byName[n] = j;
+      }
+
+      final commanderKeys =
+          commanderNames.map((n) => n.toLowerCase()).toSet();
+      final commanders = <DeckCard>[];
+      final mainboard = <DeckCard>[];
+      final unresolved = <String>[];
+
+      for (final p in parsed) {
+        final j = byName[p.name.toLowerCase()];
+        if (j == null) {
+          unresolved.add(p.name);
+          continue;
+        }
+        // A card that is also named as a commander goes to the command zone.
+        if (commanderKeys.contains(p.name.toLowerCase())) continue;
+        mainboard.add(
+            DeckCard.fromScryfall(j, deckId: 0, quantity: p.quantity));
+      }
+      for (final n in commanderNames) {
+        final j = byName[n.toLowerCase()];
+        if (j == null) {
+          unresolved.add(n);
+          continue;
+        }
+        commanders.add(DeckCard.fromScryfall(j, deckId: 0));
+      }
+
+      final ci = commanders.isEmpty
+          ? null
+          : CommanderRules.combinedColorIdentity(commanders);
+      title = commanders.isEmpty
+          ? 'Pasted list'
+          : commanders.map((c) => c.name).join(' + ');
+
+      result = await _critique.critique(
+        mainboard: mainboard,
+        commanders: commanders,
+        commanderColorIdentity: ci,
+        isOwned: (nameLower) => store.ownedCount(nameLower) > 0,
+      );
+      if (unresolved.isNotEmpty) {
+        note = '${unresolved.length} name(s) not found: '
+            '${unresolved.take(6).join(', ')}'
+            '${unresolved.length > 6 ? '…' : ''}';
+      }
+    } catch (e) {
+      if (context.mounted) Navigator.of(context).pop();
+      _showSnack(e.toString());
+      return;
+    }
+    if (context.mounted) Navigator.of(context).pop(); // spinner
+    if (!context.mounted) return;
+    if (note != null) _showSnack(note);
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (ctx) =>
+          _CritiqueSheet(critique: result!, title: title, onAdd: null),
+    );
   }
 
   /// Runs the offline [DeckAnalyzer] on the selected deck and shows its findings
@@ -1446,6 +1670,167 @@ class _RecommendationsSheetState extends State<_RecommendationsSheet> {
                 await widget.onAdd(c.name);
               },
             ),
+    );
+  }
+}
+
+/// Bottom sheet for a [DeckCritique]: a stat summary, top findings, suggested
+/// cuts, and suggested adds. [onAdd] adds a card to the current deck; pass null
+/// (for a pasted list) to make the add list display-only.
+class _CritiqueSheet extends StatefulWidget {
+  const _CritiqueSheet({
+    required this.critique,
+    required this.title,
+    required this.onAdd,
+  });
+
+  final DeckCritique critique;
+  final String title;
+  final Future<void> Function(String name)? onAdd;
+
+  @override
+  State<_CritiqueSheet> createState() => _CritiqueSheetState();
+}
+
+class _CritiqueSheetState extends State<_CritiqueSheet> {
+  bool _ownedOnly = false;
+  final Set<String> _added = {};
+
+  @override
+  Widget build(BuildContext context) {
+    final c = widget.critique;
+    final a = c.analysis;
+    final adds = c.adds;
+    final addList =
+        adds == null ? const [] : (_ownedOnly ? adds.ownedOnly : adds.all);
+
+    return DraggableScrollableSheet(
+      expand: false,
+      initialChildSize: 0.75,
+      maxChildSize: 0.95,
+      builder: (context, controller) => ListView(
+        controller: controller,
+        padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+        children: [
+          Text('Critique — ${widget.title}',
+              style: Theme.of(context).textTheme.titleLarge),
+          Text('${a.profile.name} · ${a.totalCards} cards',
+              style: Theme.of(context).textTheme.bodySmall),
+          const SizedBox(height: 12),
+          Wrap(spacing: 16, runSpacing: 8, children: [
+            _metric(context, 'Lands', '${a.landCount} / ~${a.recommendedLands}'),
+            _metric(context, 'Ramp', '${a.rampCount}'),
+            _metric(context, 'Draw', '${a.drawCount}'),
+            _metric(context, 'Removal', '${a.removalCount}'),
+            if (a.cheatCount > 0) _metric(context, 'Cheat', '${a.cheatCount}'),
+            if (a.recursionCount > 0)
+              _metric(context, 'Recursion', '${a.recursionCount}'),
+            _metric(context, 'Avg MV', a.avgManaValue.toStringAsFixed(1)),
+          ]),
+          const Divider(height: 24),
+
+          // Key findings (warnings + suggestions only).
+          for (final f in a.findings.where(
+              (f) => f.severity != FindingSeverity.info))
+            _finding(context, f),
+
+          const SizedBox(height: 8),
+          _sectionTitle(context, 'Consider cutting (${c.cuts.length})'),
+          if (c.cuts.isEmpty)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 4),
+              child: Text('Nothing stands out to cut.'),
+            )
+          else
+            for (final cut in c.cuts)
+              ListTile(
+                dense: true,
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.content_cut,
+                    size: 18, color: Colors.redAccent),
+                title: Text(cut.card.name),
+                subtitle: Text(cut.reason),
+              ),
+
+          const SizedBox(height: 12),
+          _sectionTitle(context, 'Consider adding'),
+          if (adds == null)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 4),
+              child: Text(
+                  'Set a commander to get EDHREC add recommendations.'),
+            )
+          else ...[
+            const SizedBox(height: 4),
+            SegmentedButton<bool>(
+              segments: [
+                ButtonSegment(value: false, label: Text('All (${adds.all.length})')),
+                ButtonSegment(
+                    value: true, label: Text('Owned (${adds.ownedOnly.length})')),
+              ],
+              selected: {_ownedOnly},
+              onSelectionChanged: (s) => setState(() => _ownedOnly = s.first),
+            ),
+            for (final rec in addList) _addRow(context, rec),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _sectionTitle(BuildContext context, String text) => Padding(
+        padding: const EdgeInsets.only(top: 4, bottom: 4),
+        child: Text(text, style: Theme.of(context).textTheme.titleMedium),
+      );
+
+  Widget _metric(BuildContext context, String label, String value) => Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(label, style: Theme.of(context).textTheme.labelSmall),
+          Text(value, style: Theme.of(context).textTheme.titleMedium),
+        ],
+      );
+
+  Widget _finding(BuildContext context, DeckFinding f) {
+    final (icon, color) = f.severity == FindingSeverity.warning
+        ? (Icons.error_outline, Colors.redAccent)
+        : (Icons.lightbulb_outline, Colors.amber);
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Icon(icon, color: color, size: 18),
+        const SizedBox(width: 8),
+        Expanded(child: Text(f.message)),
+      ]),
+    );
+  }
+
+  Widget _addRow(BuildContext context, CardRecommendation c) {
+    final pct = (c.inclusion * 100).round();
+    final onAdd = widget.onAdd;
+    final added = _added.contains(c.name.toLowerCase());
+    return ListTile(
+      dense: true,
+      contentPadding: EdgeInsets.zero,
+      leading: c.owned
+          ? const Icon(Icons.check_circle, color: Colors.green, size: 20)
+          : Icon(Icons.circle_outlined,
+              color: Theme.of(context).disabledColor, size: 20),
+      title: Text(c.name),
+      subtitle: Text('${c.category} · $pct% of decks'),
+      trailing: onAdd == null
+          ? null
+          : (added
+              ? const Icon(Icons.check, color: Colors.green)
+              : IconButton(
+                  icon: const Icon(Icons.add_circle_outline),
+                  tooltip: 'Add to mainboard',
+                  onPressed: () async {
+                    setState(() => _added.add(c.name.toLowerCase()));
+                    await onAdd(c.name);
+                  },
+                )),
     );
   }
 }
