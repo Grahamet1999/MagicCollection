@@ -123,6 +123,22 @@ class DatabaseService {
   Future<void> deleteDeck(int id) => _b.deleteDeck(id);
   Future<Map<int, int>> deckCardCounts() => _b.deckCardCounts();
   Future<int> addOrMergeDeckCard(DeckCard card) => _b.addOrMergeDeckCard(card);
+  Future<void> setDeckCardDetails(
+    int id, {
+    required String typeLine,
+    required double cmc,
+    required String colors,
+    required String colorIdentity,
+    required String oracleText,
+  }) =>
+      _b.setDeckCardDetails(
+        id,
+        typeLine: typeLine,
+        cmc: cmc,
+        colors: colors,
+        colorIdentity: colorIdentity,
+        oracleText: oracleText,
+      );
   Future<List<DeckCard>> getDeckCards(int deckId) => _b.getDeckCards(deckId);
   Future<void> updateDeckCardQuantity(int id, int quantity) =>
       _b.updateDeckCardQuantity(id, quantity);

@@ -113,6 +113,18 @@ abstract class CardBackend {
   /// exists on the same board; returns the affected row's id.
   Future<int> addOrMergeDeckCard(DeckCard card);
 
+  /// Backfills the Scryfall-derived detail fields on the deck card with [id],
+  /// used to enrich rows created before oracle text was captured so deck
+  /// analysis can classify them.
+  Future<void> setDeckCardDetails(
+    int id, {
+    required String typeLine,
+    required double cmc,
+    required String colors,
+    required String colorIdentity,
+    required String oracleText,
+  });
+
   /// Returns all cards in the deck with [deckId] (all boards).
   Future<List<DeckCard>> getDeckCards(int deckId);
 

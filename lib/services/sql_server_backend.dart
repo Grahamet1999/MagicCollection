@@ -87,6 +87,10 @@ class SqlServerBackend implements CardBackend {
       "IF COL_LENGTH('dbo.cards', 'oracle_text') IS NULL "
       'ALTER TABLE dbo.cards ADD oracle_text NVARCHAR(MAX) NULL',
     );
+    await odbc.execute(
+      "IF COL_LENGTH('dbo.deck_cards', 'oracle_text') IS NULL "
+      'ALTER TABLE dbo.deck_cards ADD oracle_text NVARCHAR(MAX) NULL',
+    );
   }
 
   /// Creates the folders/cards/decks/deck_cards tables if they don't yet exist.
@@ -146,6 +150,7 @@ class SqlServerBackend implements CardBackend {
         color_identity   NVARCHAR(10) NULL,
         cmc              DECIMAL(6,2) NULL,
         type_line        NVARCHAR(255) NULL,
+        oracle_text      NVARCHAR(MAX) NULL,
         board            NVARCHAR(20) NOT NULL DEFAULT 'main',
         CONSTRAINT FK_deck_cards_deck FOREIGN KEY (deck_id)
           REFERENCES dbo.decks (id) ON DELETE CASCADE
@@ -529,15 +534,32 @@ class SqlServerBackend implements CardBackend {
     final rows = await _db.execute(
       'INSERT INTO dbo.deck_cards '
       '(deck_id, name, set_code, collector_number, foil, quantity, image_url, '
-      'price_usd, colors, color_identity, cmc, type_line, board) '
+      'price_usd, colors, color_identity, cmc, type_line, oracle_text, board) '
       'OUTPUT INSERTED.id AS id VALUES ('
       '${_lit(card.deckId)}, ${_lit(card.name)}, ${_lit(card.setCode)}, '
       '${_lit(card.collectorNumber)}, ${_lit(card.foil)}, ${_lit(card.quantity)}, '
       '${_lit(card.imageUrl)}, ${_lit(card.priceUsd)}, ${_lit(card.colors)}, '
       '${_lit(card.colorIdentity)}, ${_lit(card.cmc)}, ${_lit(card.typeLine)}, '
-      '${_lit(card.board)})',
+      '${_lit(card.oracleText)}, ${_lit(card.board)})',
     );
     return _asInt(rows.isNotEmpty ? rows.first['id'] : null) ?? -1;
+  }
+
+  @override
+  Future<void> setDeckCardDetails(
+    int id, {
+    required String typeLine,
+    required double cmc,
+    required String colors,
+    required String colorIdentity,
+    required String oracleText,
+  }) async {
+    await _db.execute(
+      'UPDATE dbo.deck_cards SET type_line = ${_lit(typeLine)}, '
+      'cmc = ${_lit(cmc)}, colors = ${_lit(colors)}, '
+      'color_identity = ${_lit(colorIdentity)}, '
+      'oracle_text = ${_lit(oracleText)} WHERE id = ${_lit(id)}',
+    );
   }
 
   @override
@@ -545,7 +567,7 @@ class SqlServerBackend implements CardBackend {
     final rows = await _db.execute(
       'SELECT id, deck_id, name, set_code, collector_number, '
       'CAST(foil AS INT) AS foil, quantity, image_url, price_usd, colors, '
-      'color_identity, cmc, type_line, board '
+      'color_identity, cmc, type_line, oracle_text, board '
       'FROM dbo.deck_cards WHERE deck_id = ${_lit(deckId)} '
       'ORDER BY name ASC',
     );
@@ -625,6 +647,7 @@ class SqlServerBackend implements CardBackend {
       colorIdentity: r['color_identity'] as String? ?? '',
       cmc: _asDouble(r['cmc']) ?? 0,
       typeLine: r['type_line'] as String? ?? '',
+      oracleText: r['oracle_text'] as String? ?? '',
       board: r['board'] as String? ?? DeckBoard.main,
     );
   }

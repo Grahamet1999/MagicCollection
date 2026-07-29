@@ -50,6 +50,10 @@ class DeckCard {
   /// Full type line, e.g. "Legendary Creature — Elf Druid", used for grouping.
   final String typeLine;
 
+  /// Oracle rules text, used by deck analysis to classify ramp, card draw, and
+  /// removal. "" = not yet known (or genuinely no text).
+  final String oracleText;
+
   /// One of [DeckBoard.commander] / [DeckBoard.main] / [DeckBoard.side].
   final String board;
 
@@ -67,6 +71,7 @@ class DeckCard {
     this.colorIdentity = '',
     this.cmc = 0,
     this.typeLine = '',
+    this.oracleText = '',
     this.board = DeckBoard.main,
   });
 
@@ -88,6 +93,7 @@ class DeckCard {
     String? colorIdentity,
     double? cmc,
     String? typeLine,
+    String? oracleText,
     String? board,
   }) {
     return DeckCard(
@@ -104,6 +110,7 @@ class DeckCard {
       colorIdentity: colorIdentity ?? this.colorIdentity,
       cmc: cmc ?? this.cmc,
       typeLine: typeLine ?? this.typeLine,
+      oracleText: oracleText ?? this.oracleText,
       board: board ?? this.board,
     );
   }
@@ -125,6 +132,7 @@ class DeckCard {
       'color_identity': colorIdentity,
       'cmc': cmc,
       'type_line': typeLine,
+      'oracle_text': oracleText,
       'board': board,
     };
   }
@@ -145,6 +153,7 @@ class DeckCard {
       colorIdentity: map['color_identity'] as String? ?? '',
       cmc: (map['cmc'] as num?)?.toDouble() ?? 0,
       typeLine: map['type_line'] as String? ?? '',
+      oracleText: map['oracle_text'] as String? ?? '',
       board: map['board'] as String? ?? DeckBoard.main,
     );
   }
@@ -170,6 +179,7 @@ class DeckCard {
       colorIdentity: sf.colorIdentityFromScryfall(json),
       cmc: sf.cmcFromScryfall(json),
       typeLine: sf.typeLineFromScryfall(json),
+      oracleText: sf.oracleTextFromScryfall(json),
       board: board,
     );
   }

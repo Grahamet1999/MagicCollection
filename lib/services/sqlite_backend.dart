@@ -36,7 +36,7 @@ class SqliteBackend implements CardBackend {
       options: OpenDatabaseOptions(
         // Bump `version` and add an `onUpgrade` branch below whenever the schema
         // changes, so existing local databases migrate forward in place.
-        version: 4,
+        version: 5,
         onConfigure: (db) => db.execute('PRAGMA foreign_keys = ON'),
         onCreate: (db, version) async {
           await db.execute('''
@@ -83,6 +83,11 @@ class SqliteBackend implements CardBackend {
             await db.execute('ALTER TABLE cards ADD COLUMN cmc REAL');
             await db.execute('ALTER TABLE cards ADD COLUMN oracle_text TEXT');
           }
+          // v5 added oracle text on deck cards (deck analysis / advisor).
+          if (oldVersion < 5) {
+            await db
+                .execute('ALTER TABLE deck_cards ADD COLUMN oracle_text TEXT');
+          }
         },
       ),
     );
@@ -113,6 +118,7 @@ class SqliteBackend implements CardBackend {
         color_identity   TEXT,
         cmc              REAL,
         type_line        TEXT,
+        oracle_text      TEXT,
         board            TEXT NOT NULL DEFAULT 'main',
         FOREIGN KEY (deck_id) REFERENCES decks (id) ON DELETE CASCADE
       )
@@ -504,6 +510,29 @@ class SqliteBackend implements CardBackend {
       return id;
     }
     return _database.insert('deck_cards', _deckToRow(card));
+  }
+
+  @override
+  Future<void> setDeckCardDetails(
+    int id, {
+    required String typeLine,
+    required double cmc,
+    required String colors,
+    required String colorIdentity,
+    required String oracleText,
+  }) async {
+    await _database.update(
+      'deck_cards',
+      {
+        'type_line': typeLine,
+        'cmc': cmc,
+        'colors': colors,
+        'color_identity': colorIdentity,
+        'oracle_text': oracleText,
+      },
+      where: 'id = ?',
+      whereArgs: [id],
+    );
   }
 
   @override

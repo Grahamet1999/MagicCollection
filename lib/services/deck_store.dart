@@ -3,7 +3,10 @@ import 'package:flutter/foundation.dart';
 import '../models/deck.dart';
 import '../models/deck_card.dart';
 import '../models/scryfall_parse.dart';
+import 'collection_store.dart' show DetailBackfillResult;
+import 'commander_rules.dart';
 import 'database_service.dart';
+import 'scryfall_service.dart';
 
 /// In-memory coordinator for the Decks tab, mirroring [CollectionStore].
 ///
@@ -40,13 +43,21 @@ class DeckStore extends ChangeNotifier {
   /// Format label of the selected deck, if any.
   String? get format => selectedDeck?.format;
 
-  /// The selected deck's commander card, or null if none is set.
+  /// The selected deck's commanders (one, or two for Partner / Background /
+  /// Friends-forever pairings), in insertion order.
+  List<DeckCard> get commanders =>
+      _deckCards.where((c) => c.board == DeckBoard.commander).toList();
+
+  /// The primary commander card, or null if none is set. For partner decks this
+  /// is the first of [commanders]; prefer [commanders] when both matter.
   DeckCard? get commander {
-    for (final c in _deckCards) {
-      if (c.board == DeckBoard.commander) return c;
-    }
-    return null;
+    final cs = commanders;
+    return cs.isEmpty ? null : cs.first;
   }
+
+  /// The commanders' display names.
+  List<String> get commanderNames =>
+      commanders.map((c) => c.name).toList();
 
   /// Every card in the selected deck, across all boards.
   List<DeckCard> get allCards => List.unmodifiable(_deckCards);
@@ -59,9 +70,14 @@ class DeckStore extends ChangeNotifier {
   List<DeckCard> get sideboard =>
       _deckCards.where((c) => c.board == DeckBoard.side).toList();
 
-  /// The commander's color identity (WUBRG letters), or null when no commander
-  /// is set — used to filter which cards may be added to the deck.
-  String? get commanderColorIdentity => commander?.colorIdentity;
+  /// The combined color identity of all commanders (WUBRG letters), or null when
+  /// none is set — used to filter which cards may be added to the deck. For
+  /// partner/background pairs this is the union of both identities.
+  String? get commanderColorIdentity {
+    final cs = commanders;
+    if (cs.isEmpty) return null;
+    return CommanderRules.combinedColorIdentity(cs);
+  }
 
   /// Sums the quantities of [cards].
   int _sumQty(Iterable<DeckCard> cards) =>
@@ -70,7 +86,7 @@ class DeckStore extends ChangeNotifier {
   // Card totals per board (by quantity), shown in the deck header.
   int get mainboardCount => _sumQty(mainboard);
   int get sideboardCount => _sumQty(sideboard);
-  int get commanderCount => commander == null ? 0 : commander!.quantity;
+  int get commanderCount => _sumQty(commanders);
 
   /// Total USD value across every board.
   double get deckValue =>
@@ -79,7 +95,7 @@ class DeckStore extends ChangeNotifier {
   /// Pip counts per color across mainboard + commander (by quantity).
   Map<String, int> get colorBreakdown {
     final counts = {'W': 0, 'U': 0, 'B': 0, 'R': 0, 'G': 0};
-    for (final c in [...mainboard, if (commander != null) commander!]) {
+    for (final c in [...mainboard, ...commanders]) {
       for (final letter in c.colors.split('')) {
         counts[letter] = (counts[letter] ?? 0) + c.quantity;
       }
@@ -168,6 +184,72 @@ class DeckStore extends ChangeNotifier {
     await load();
   }
 
+  /// Backfills oracle text (and other Scryfall detail fields) from Scryfall for
+  /// the selected deck's cards missing them — rows created before oracle text
+  /// was captured. Enables accurate ramp/draw/removal classification in the deck
+  /// analyzer. Returns how many rows were updated out of how many needed it.
+  /// Mirrors [CollectionStore.backfillCardDetails].
+  Future<DetailBackfillResult> backfillSelectedDeckDetails({
+    void Function(int done, int total)? onProgress,
+  }) async {
+    if (_selectedDeckId == null) {
+      return const DetailBackfillResult(updated: 0, total: 0);
+    }
+    final missing =
+        _deckCards.where((c) => c.oracleText.isEmpty && c.id != null).toList();
+    if (missing.isEmpty) return const DetailBackfillResult(updated: 0, total: 0);
+
+    // One lookup per unique printing.
+    final byKey = <String, Map<String, String>>{};
+    for (final c in missing) {
+      byKey['${c.setCode.toLowerCase()}|${c.collectorNumber}'] = {
+        'set': c.setCode.toLowerCase(),
+        'collector_number': c.collectorNumber,
+      };
+    }
+    final identifiers = byKey.values.toList();
+    final total = identifiers.length;
+    onProgress?.call(0, total);
+
+    final scryfall = ScryfallService();
+    try {
+      final jsonByKey = <String, Map<String, dynamic>>{};
+      const chunkSize = 75;
+      for (var i = 0; i < identifiers.length; i += chunkSize) {
+        final end = (i + chunkSize < identifiers.length)
+            ? i + chunkSize
+            : identifiers.length;
+        final result =
+            await scryfall.getCollection(identifiers.sublist(i, end));
+        for (final j in result.found) {
+          jsonByKey['${(j['set'] as String).toLowerCase()}'
+              '|${j['collector_number']}'] = j;
+        }
+        onProgress?.call(end, total);
+      }
+
+      var updated = 0;
+      for (final c in missing) {
+        final json =
+            jsonByKey['${c.setCode.toLowerCase()}|${c.collectorNumber}'];
+        if (json == null) continue;
+        await _db.setDeckCardDetails(
+          c.id!,
+          typeLine: typeLineFromScryfall(json),
+          cmc: cmcFromScryfall(json),
+          colors: colorsFromScryfall(json),
+          colorIdentity: colorIdentityFromScryfall(json),
+          oracleText: oracleTextFromScryfall(json),
+        );
+        updated++;
+      }
+      await load();
+      return DetailBackfillResult(updated: updated, total: missing.length);
+    } finally {
+      scryfall.dispose();
+    }
+  }
+
   /// Sets a deck card's quantity (ignored if less than 1).
   Future<void> setQuantity(int cardId, int quantity) async {
     if (quantity < 1) return;
@@ -187,12 +269,29 @@ class DeckStore extends ChangeNotifier {
     await load();
   }
 
-  /// Makes [cardId] the deck's commander, demoting any existing commander to the
-  /// mainboard.
+  /// Makes [cardId] the deck's commander. If exactly one commander is already
+  /// set and it forms a legal pairing with the target (Partner / Friends forever
+  /// / Background), both are kept as co-commanders; otherwise existing
+  /// commanders are demoted to the mainboard. A deck holds at most two
+  /// commanders.
   Future<void> setCommander(int cardId) async {
-    final current = commander;
-    if (current != null && current.id != cardId) {
-      await _db.setDeckCardBoard(current.id!, DeckBoard.main);
+    DeckCard? target;
+    for (final c in _deckCards) {
+      if (c.id == cardId) {
+        target = c;
+        break;
+      }
+    }
+    final existing = commanders;
+    // Keep a single existing commander only if it legally pairs with the target.
+    final keepPartner = target != null &&
+        existing.length == 1 &&
+        existing.first.id != cardId &&
+        CommanderRules.canPair(existing.first, target);
+    for (final c in existing) {
+      if (c.id == cardId) continue;
+      if (keepPartner && c.id == existing.first.id) continue;
+      await _db.setDeckCardBoard(c.id!, DeckBoard.main);
     }
     await _db.setDeckCardBoard(cardId, DeckBoard.commander);
     await load();

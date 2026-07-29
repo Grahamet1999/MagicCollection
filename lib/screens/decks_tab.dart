@@ -4,12 +4,16 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
 import '../models/deck.dart';
+import '../models/deck_advice.dart';
 import '../models/deck_card.dart';
 import '../models/scryfall_parse.dart';
 import '../services/database_service.dart';
+import '../services/deck_analyzer.dart';
 import '../services/deck_csv_export_service.dart';
 import '../services/deck_csv_import_service.dart';
 import '../services/deck_store.dart';
+import '../services/edhrec_service.dart';
+import '../services/recommendation_service.dart';
 import '../services/scryfall_service.dart';
 import '../widgets/card_image.dart';
 import '../widgets/dialogs.dart';
@@ -78,6 +82,13 @@ class _DecksTabState extends State<DecksTab> {
   final _searchController = TextEditingController();
   final _searchFocus = FocusNode();
 
+  /// EDHREC-backed card recommendations for the deck's commander.
+  final _edhrec = EdhrecService();
+  late final _recommend = RecommendationService(_edhrec);
+
+  /// True while an EDHREC recommendation fetch is in flight.
+  bool _recommending = false;
+
   /// Whether the add-card search is expanded (vs. collapsed to a search icon).
   bool _searchExpanded = false;
 
@@ -86,6 +97,11 @@ class _DecksTabState extends State<DecksTab> {
 
   /// True while a CSV deck import is running.
   bool _importing = false;
+
+  /// Deck ids whose oracle-text backfill we've already attempted this session,
+  /// so opening Analyze again doesn't re-query Scryfall for genuinely-textless
+  /// cards (basic lands, vanilla creatures).
+  final Set<int> _detailsBackfilled = {};
 
   /// Last search error message, or null.
   String? _error;
@@ -105,6 +121,7 @@ class _DecksTabState extends State<DecksTab> {
   @override
   void dispose() {
     _scryfall.dispose();
+    _edhrec.dispose();
     _searchController.dispose();
     _searchFocus.dispose();
     super.dispose();
@@ -301,9 +318,12 @@ class _DecksTabState extends State<DecksTab> {
         const SizedBox(height: 12),
         _buildAddSection(context),
         const SizedBox(height: 16),
-        if (store.commander != null) ...[
-          _sectionHeader(context, 'Commander', store.commanderCount),
-          _deckCardRow(context, store.commander!),
+        if (store.commanders.isNotEmpty) ...[
+          _sectionHeader(
+              context,
+              store.commanders.length > 1 ? 'Commanders' : 'Commander',
+              store.commanderCount),
+          for (final c in store.commanders) _deckCardRow(context, c),
           const SizedBox(height: 16),
         ],
         _sectionHeader(context, 'Mainboard', store.mainboardCount),
@@ -566,9 +586,136 @@ class _DecksTabState extends State<DecksTab> {
                 style: Theme.of(context).textTheme.labelMedium),
             const SizedBox(height: 6),
             _manaCurve(context, scheme),
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                OutlinedButton.icon(
+                  onPressed: () => _showAnalysis(context),
+                  icon: const Icon(Icons.insights),
+                  label: const Text('Analyze deck'),
+                ),
+                Tooltip(
+                  message: store.commanders.isEmpty
+                      ? 'Set a commander to get recommendations'
+                      : 'Cards commonly played with '
+                          '${store.commanderNames.join(' + ')} (EDHREC)',
+                  child: OutlinedButton.icon(
+                    onPressed: (store.commanders.isEmpty || _recommending)
+                        ? null
+                        : () => _showRecommendations(context),
+                    icon: _recommending
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2))
+                        : const Icon(Icons.auto_awesome),
+                    label: const Text('Recommend cards'),
+                  ),
+                ),
+              ],
+            ),
           ],
         ),
       ),
+    );
+  }
+
+  /// Fetches EDHREC recommendations for the commander and shows them in a sheet,
+  /// split into owned-only and owned-prioritized pools.
+  Future<void> _showRecommendations(BuildContext context) async {
+    final names = store.commanderNames;
+    if (names.isEmpty) return;
+    setState(() => _recommending = true);
+    final deckNames =
+        store.allCards.map((c) => c.name.toLowerCase()).toSet();
+    RecommendationResult? result;
+    String? error;
+    try {
+      result = await _recommend.forCommanders(
+        names,
+        isOwned: (nameLower) => store.ownedCount(nameLower) > 0,
+        excludeNames: deckNames,
+      );
+    } catch (e) {
+      error = e.toString();
+    } finally {
+      if (mounted) setState(() => _recommending = false);
+    }
+    if (!context.mounted) return;
+    if (error != null) {
+      _showSnack(error);
+      return;
+    }
+    if (result == null) {
+      _showSnack('EDHREC has no data for ${names.join(' + ')}.');
+      return;
+    }
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (ctx) => _RecommendationsSheet(
+        result: result!,
+        onAdd: _addByName,
+      ),
+    );
+  }
+
+  /// Resolves [name] to a printing (fuzzy, filtered to the commander's color
+  /// identity when possible) and adds it to the mainboard.
+  Future<void> _addByName(String name) async {
+    final deckId = store.selectedDeckId;
+    if (deckId == null) return;
+    try {
+      final json = await _scryfall.getByFuzzyName(name);
+      if (json == null) {
+        _showSnack('Could not find "$name" on Scryfall.');
+        return;
+      }
+      await store.addCard(
+          DeckCard.fromScryfall(json, deckId: deckId, board: DeckBoard.main));
+      _showSnack('Added $name to mainboard.');
+    } catch (e) {
+      _showSnack(e.toString());
+    }
+  }
+
+  /// Runs the offline [DeckAnalyzer] on the selected deck and shows its findings
+  /// in a bottom sheet. First backfills oracle text for any rows that predate it
+  /// (older decks) so ramp/draw/removal classification is accurate.
+  Future<void> _showAnalysis(BuildContext context) async {
+    final deckId = store.selectedDeckId;
+    final needsBackfill = deckId != null &&
+        !_detailsBackfilled.contains(deckId) &&
+        store.allCards.any((c) => c.oracleText.isEmpty);
+    if (needsBackfill) {
+      showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) => const Center(child: CircularProgressIndicator()),
+      );
+      try {
+        await store.backfillSelectedDeckDetails();
+      } catch (_) {
+        // Offline or Scryfall error — analyze with what we have.
+      }
+      _detailsBackfilled.add(deckId);
+      if (context.mounted) Navigator.of(context).pop(); // dismiss spinner
+    }
+    if (!context.mounted) return;
+    final analysis = DeckAnalyzer.analyze(
+      store.mainboard,
+      commanders: store.commanders,
+      commanderColorIdentity: store.commanderColorIdentity,
+      profile: DeckFormatProfile.forFormat(store.format),
+    );
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (ctx) => _DeckAnalysisSheet(analysis: analysis),
     );
   }
 
@@ -1101,5 +1248,204 @@ class _DecksTabState extends State<DecksTab> {
       ),
     );
     if (confirmed == true) await store.deleteDeck(deck.id!);
+  }
+}
+
+/// Bottom sheet rendering a [DeckAnalysis]: a compact stat readout on top and
+/// the ranked findings (warnings first) below.
+class _DeckAnalysisSheet extends StatelessWidget {
+  const _DeckAnalysisSheet({required this.analysis});
+
+  final DeckAnalysis analysis;
+
+  @override
+  Widget build(BuildContext context) {
+    final a = analysis;
+    return DraggableScrollableSheet(
+      expand: false,
+      initialChildSize: 0.6,
+      maxChildSize: 0.9,
+      builder: (context, controller) => ListView(
+        controller: controller,
+        padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+        children: [
+          Text('Deck analysis',
+              style: Theme.of(context).textTheme.titleLarge),
+          Text('${a.profile.name} · ${a.totalCards} cards',
+              style: Theme.of(context).textTheme.bodySmall),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 16,
+            runSpacing: 8,
+            children: [
+              _metric(context, 'Lands', '${a.landCount} / ~${a.recommendedLands}'),
+              _metric(context, 'Ramp', '${a.rampCount}'),
+              _metric(context, 'Draw', '${a.drawCount}'),
+              _metric(context, 'Removal', '${a.removalCount}'),
+              _metric(context, 'Wipes', '${a.wipeCount}'),
+              if (a.cheatCount > 0) _metric(context, 'Cheat', '${a.cheatCount}'),
+              if (a.recursionCount > 0)
+                _metric(context, 'Recursion', '${a.recursionCount}'),
+              _metric(context, 'Avg MV', a.avgManaValue.toStringAsFixed(1)),
+            ],
+          ),
+          const Divider(height: 24),
+          if (a.findings.isEmpty)
+            const Text('No issues found.')
+          else
+            for (final f in a.findings) _finding(context, f),
+        ],
+      ),
+    );
+  }
+
+  Widget _metric(BuildContext context, String label, String value) => Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(label, style: Theme.of(context).textTheme.labelSmall),
+          Text(value, style: Theme.of(context).textTheme.titleMedium),
+        ],
+      );
+
+  Widget _finding(BuildContext context, DeckFinding f) {
+    final (icon, color) = switch (f.severity) {
+      FindingSeverity.warning => (Icons.error_outline, Colors.redAccent),
+      FindingSeverity.suggestion => (Icons.lightbulb_outline, Colors.amber),
+      FindingSeverity.info => (Icons.check_circle_outline, Colors.green),
+    };
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, color: color, size: 20),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(f.message),
+                if (f.cards.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 2),
+                    child: Text(
+                      f.cards.take(12).join(', ') +
+                          (f.cards.length > 12
+                              ? ' +${f.cards.length - 12} more'
+                              : ''),
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Bottom sheet listing EDHREC recommendations for a commander, with a toggle
+/// between the owned-only pool and the owned-prioritized "all" pool. Each row
+/// can be added to the deck; added rows disable to avoid duplicates.
+class _RecommendationsSheet extends StatefulWidget {
+  const _RecommendationsSheet({required this.result, required this.onAdd});
+
+  final RecommendationResult result;
+  final Future<void> Function(String name) onAdd;
+
+  @override
+  State<_RecommendationsSheet> createState() => _RecommendationsSheetState();
+}
+
+class _RecommendationsSheetState extends State<_RecommendationsSheet> {
+  /// True = owned-only pool (A); false = all/owned-first pool (B).
+  bool _ownedOnly = false;
+
+  /// Names already added from this sheet, so their button disables.
+  final Set<String> _added = {};
+
+  @override
+  Widget build(BuildContext context) {
+    final r = widget.result;
+    final cards = _ownedOnly ? r.ownedOnly : r.all;
+    final ownedCount = r.ownedOnly.length;
+    return DraggableScrollableSheet(
+      expand: false,
+      initialChildSize: 0.7,
+      maxChildSize: 0.95,
+      builder: (context, controller) => Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Recommended for ${r.commanderName}',
+                    style: Theme.of(context).textTheme.titleLarge),
+                Text('Cards commonly played with this commander (EDHREC)',
+                    style: Theme.of(context).textTheme.bodySmall),
+                const SizedBox(height: 10),
+                SegmentedButton<bool>(
+                  segments: [
+                    ButtonSegment(
+                        value: false,
+                        label: Text('All (${r.all.length})'),
+                        icon: const Icon(Icons.public)),
+                    ButtonSegment(
+                        value: true,
+                        label: Text('Owned ($ownedCount)'),
+                        icon: const Icon(Icons.inventory_2_outlined)),
+                  ],
+                  selected: {_ownedOnly},
+                  onSelectionChanged: (s) =>
+                      setState(() => _ownedOnly = s.first),
+                ),
+              ],
+            ),
+          ),
+          Expanded(
+            child: cards.isEmpty
+                ? Center(
+                    child: Text(_ownedOnly
+                        ? 'You don\'t own any of the top recommendations yet.'
+                        : 'No recommendations.'),
+                  )
+                : ListView.builder(
+                    controller: controller,
+                    itemCount: cards.length,
+                    itemBuilder: (context, i) => _row(context, cards[i]),
+                  ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _row(BuildContext context, CardRecommendation c) {
+    final pct = (c.inclusion * 100).round();
+    final added = _added.contains(c.name.toLowerCase());
+    return ListTile(
+      dense: true,
+      title: Text(c.name),
+      subtitle: Text('${c.category} · $pct% of decks'),
+      leading: c.owned
+          ? const Tooltip(
+              message: 'In your collection',
+              child: Icon(Icons.check_circle, color: Colors.green, size: 20))
+          : Icon(Icons.circle_outlined,
+              color: Theme.of(context).disabledColor, size: 20),
+      trailing: added
+          ? const Icon(Icons.check, color: Colors.green)
+          : IconButton(
+              icon: const Icon(Icons.add_circle_outline),
+              tooltip: 'Add to mainboard',
+              onPressed: () async {
+                setState(() => _added.add(c.name.toLowerCase()));
+                await widget.onAdd(c.name);
+              },
+            ),
+    );
   }
 }
