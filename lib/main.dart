@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'screens/startup_gate.dart';
+import 'services/app_settings.dart';
 import 'services/auth_service.dart';
 import 'services/card_image_cache.dart';
 import 'services/cloud_backup_service.dart';
@@ -15,6 +16,8 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   // Prepare the on-disk card image cache (images render offline once cached).
   await CardImageCache.init();
+  // Load local settings (e.g. the Anthropic API key for the AI advisor).
+  await AppSettings.instance.load();
   // The database connection is established by StartupGate so failures surface
   // as an in-app error screen with Retry rather than crashing at launch.
   final store = CollectionStore(DatabaseService.instance);

@@ -8,7 +8,9 @@ import '../models/deck_advice.dart';
 import '../models/deck_card.dart';
 import '../models/scryfall_parse.dart';
 import '../services/database_service.dart';
+import '../services/app_settings.dart';
 import '../services/commander_rules.dart';
+import '../services/deck_advisor_service.dart';
 import '../services/deck_analyzer.dart';
 import '../services/deck_critique_service.dart';
 import '../services/deck_csv_export_service.dart';
@@ -89,6 +91,7 @@ class _DecksTabState extends State<DecksTab> {
   final _edhrec = EdhrecService();
   late final _recommend = RecommendationService(_edhrec);
   late final _critique = DeckCritiqueService(_edhrec, _recommend);
+  final _advisor = DeckAdvisorService();
 
   /// True while an EDHREC recommendation fetch is in flight.
   bool _recommending = false;
@@ -126,6 +129,7 @@ class _DecksTabState extends State<DecksTab> {
   void dispose() {
     _scryfall.dispose();
     _edhrec.dispose();
+    _advisor.dispose();
     _searchController.dispose();
     _searchFocus.dispose();
     super.dispose();
@@ -740,16 +744,107 @@ class _DecksTabState extends State<DecksTab> {
     }
     if (context.mounted) Navigator.of(context).pop(); // spinner
     if (!context.mounted) return;
+    final critique = result;
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
       showDragHandle: true,
       builder: (ctx) => _CritiqueSheet(
-        critique: result!,
+        critique: critique,
         title: store.selectedDeck?.name ?? 'Deck',
         onAdd: _addByName,
+        onManageKey: _showApiKeyDialog,
+        onExplain: critique.cuts.isEmpty
+            ? null
+            : () => _explainCuts(
+                  commanders: store.commanders,
+                  colorIdentity: store.commanderColorIdentity,
+                  format: store.format ?? 'Commander',
+                  analysis: critique.analysis,
+                  candidates: critique.cuts,
+                ),
       ),
     );
+  }
+
+  /// Runs the AI cut review, first prompting for an Anthropic API key if none is
+  /// set. Throws [DeckAdvisorException] if the user declines to provide one.
+  Future<CritiqueAdvice> _explainCuts({
+    required List<DeckCard> commanders,
+    required String? colorIdentity,
+    required String format,
+    required DeckAnalysis analysis,
+    required List<CutCandidate> candidates,
+  }) async {
+    if (!_advisor.available) {
+      await _showApiKeyDialog();
+      if (!_advisor.available) {
+        throw DeckAdvisorException(
+            'Add your Anthropic API key to use AI advice.');
+      }
+    }
+    return _advisor.reviewCuts(
+      commanders: commanders,
+      colorIdentity: colorIdentity,
+      format: format,
+      analysis: analysis,
+      candidates: candidates,
+    );
+  }
+
+  /// Dialog to set or clear the on-device Anthropic API key used for AI advice.
+  Future<void> _showApiKeyDialog() async {
+    final controller =
+        TextEditingController(text: AppSettings.instance.anthropicKey ?? '');
+    final action = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('AI advice — Anthropic API key'),
+        content: SizedBox(
+          width: 420,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                  'Paste your Anthropic API key. It is stored on this device '
+                  'only and used to call Claude directly for deck advice — it '
+                  'is never uploaded or bundled into the app.'),
+              const SizedBox(height: 12),
+              TextField(
+                controller: controller,
+                obscureText: true,
+                autofocus: true,
+                decoration: const InputDecoration(
+                  labelText: 'sk-ant-…',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, 'cancel'),
+              child: const Text('Cancel')),
+          if (AppSettings.instance.hasAnthropicKey)
+            TextButton(
+                onPressed: () => Navigator.pop(ctx, 'clear'),
+                child: const Text('Clear key')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, 'save'),
+              child: const Text('Save')),
+        ],
+      ),
+    );
+    final text = controller.text;
+    controller.dispose();
+    if (action == 'save') {
+      await AppSettings.instance.setAnthropicKey(text);
+    } else if (action == 'clear') {
+      await AppSettings.instance.setAnthropicKey(null);
+    }
+    if (mounted) setState(() {});
   }
 
   /// Prompts for a pasted decklist (and optional commander) to critique without
@@ -833,6 +928,8 @@ class _DecksTabState extends State<DecksTab> {
     DeckCritique? result;
     String? note;
     String title = 'Pasted list';
+    var critiqueCommanders = <DeckCard>[];
+    String? critiqueCi;
     try {
       final identifiers = <Map<String, String>>[
         for (final p in parsed) {'name': p.name},
@@ -877,6 +974,8 @@ class _DecksTabState extends State<DecksTab> {
       title = commanders.isEmpty
           ? 'Pasted list'
           : commanders.map((c) => c.name).join(' + ');
+      critiqueCommanders = commanders;
+      critiqueCi = ci;
 
       result = await _critique.critique(
         mainboard: mainboard,
@@ -897,12 +996,26 @@ class _DecksTabState extends State<DecksTab> {
     if (context.mounted) Navigator.of(context).pop(); // spinner
     if (!context.mounted) return;
     if (note != null) _showSnack(note);
+    final critique = result;
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
       showDragHandle: true,
-      builder: (ctx) =>
-          _CritiqueSheet(critique: result!, title: title, onAdd: null),
+      builder: (ctx) => _CritiqueSheet(
+        critique: critique,
+        title: title,
+        onAdd: null,
+        onManageKey: _showApiKeyDialog,
+        onExplain: critique.cuts.isEmpty
+            ? null
+            : () => _explainCuts(
+                  commanders: critiqueCommanders,
+                  colorIdentity: critiqueCi,
+                  format: 'Commander',
+                  analysis: critique.analysis,
+                  candidates: critique.cuts,
+                ),
+      ),
     );
   }
 
@@ -1682,11 +1795,20 @@ class _CritiqueSheet extends StatefulWidget {
     required this.critique,
     required this.title,
     required this.onAdd,
+    this.onExplain,
+    this.onManageKey,
   });
 
   final DeckCritique critique;
   final String title;
   final Future<void> Function(String name)? onAdd;
+
+  /// Fetches commander-aware AI verdicts for the cut candidates. Null when there
+  /// are no cuts to review.
+  final Future<CritiqueAdvice> Function()? onExplain;
+
+  /// Opens the Anthropic API-key dialog, so the key can be set/changed/cleared.
+  final Future<void> Function()? onManageKey;
 
   @override
   State<_CritiqueSheet> createState() => _CritiqueSheetState();
@@ -1695,6 +1817,35 @@ class _CritiqueSheet extends StatefulWidget {
 class _CritiqueSheetState extends State<_CritiqueSheet> {
   bool _ownedOnly = false;
   final Set<String> _added = {};
+
+  /// AI advice once fetched; drives the per-card verdicts and overall banner.
+  CritiqueAdvice? _advice;
+  bool _explaining = false;
+  String? _explainError;
+
+  Future<void> _explain() async {
+    final fn = widget.onExplain;
+    if (fn == null) return;
+    setState(() {
+      _explaining = true;
+      _explainError = null;
+    });
+    try {
+      final advice = await fn();
+      if (mounted) setState(() => _advice = advice);
+    } catch (e) {
+      if (mounted) setState(() => _explainError = e.toString());
+    } finally {
+      if (mounted) setState(() => _explaining = false);
+    }
+  }
+
+  /// Icon + color + label for an AI verdict string.
+  (IconData, Color, String) _verdictStyle(String verdict) => switch (verdict) {
+        'keep' => (Icons.verified, Colors.green, 'Keep'),
+        'flex' => (Icons.swap_horiz, Colors.amber, 'Flex'),
+        _ => (Icons.content_cut, Colors.redAccent, 'Cut'),
+      };
 
   @override
   Widget build(BuildContext context) {
@@ -1735,22 +1886,62 @@ class _CritiqueSheetState extends State<_CritiqueSheet> {
             _finding(context, f),
 
           const SizedBox(height: 8),
-          _sectionTitle(context, 'Consider cutting (${c.cuts.length})'),
+          Row(
+            children: [
+              Expanded(
+                  child: _sectionTitle(
+                      context, 'Consider cutting (${c.cuts.length})')),
+              if (widget.onExplain != null && _advice == null)
+                TextButton.icon(
+                  onPressed: _explaining ? null : _explain,
+                  icon: _explaining
+                      ? const SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(strokeWidth: 2))
+                      : const Icon(Icons.psychology, size: 18),
+                  label: Text(_explaining ? 'Asking Claude…' : 'Explain with AI'),
+                ),
+              if (widget.onManageKey != null)
+                IconButton(
+                  icon: const Icon(Icons.key, size: 18),
+                  tooltip: 'Anthropic API key',
+                  onPressed: () => widget.onManageKey!(),
+                ),
+            ],
+          ),
+          if (_explainError != null)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 4),
+              child: Text(_explainError!,
+                  style: TextStyle(color: Theme.of(context).colorScheme.error)),
+            ),
+          if (_advice != null && _advice!.overall.isNotEmpty)
+            Container(
+              margin: const EdgeInsets.symmetric(vertical: 6),
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.primaryContainer,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                const Icon(Icons.psychology, size: 18),
+                const SizedBox(width: 8),
+                Expanded(
+                    child: Text(_advice!.overall,
+                        style: TextStyle(
+                            color: Theme.of(context)
+                                .colorScheme
+                                .onPrimaryContainer))),
+              ]),
+            ),
           if (c.cuts.isEmpty)
             const Padding(
               padding: EdgeInsets.symmetric(vertical: 4),
               child: Text('Nothing stands out to cut.'),
             )
           else
-            for (final cut in c.cuts)
-              ListTile(
-                dense: true,
-                contentPadding: EdgeInsets.zero,
-                leading: const Icon(Icons.content_cut,
-                    size: 18, color: Colors.redAccent),
-                title: Text(cut.card.name),
-                subtitle: Text(cut.reason),
-              ),
+            for (final cut in c.cuts) _cutRow(context, cut),
 
           const SizedBox(height: 12),
           _sectionTitle(context, 'Consider adding'),
@@ -1803,6 +1994,34 @@ class _CritiqueSheetState extends State<_CritiqueSheet> {
         const SizedBox(width: 8),
         Expanded(child: Text(f.message)),
       ]),
+    );
+  }
+
+  Widget _cutRow(BuildContext context, CutCandidate cut) {
+    final v = _advice?.forName(cut.card.name);
+    if (v == null) {
+      return ListTile(
+        dense: true,
+        contentPadding: EdgeInsets.zero,
+        leading:
+            const Icon(Icons.content_cut, size: 18, color: Colors.redAccent),
+        title: Text(cut.card.name),
+        subtitle: Text(cut.reason),
+      );
+    }
+    final (icon, color, label) = _verdictStyle(v.verdict);
+    return ListTile(
+      dense: true,
+      contentPadding: EdgeInsets.zero,
+      leading: Icon(icon, size: 18, color: color),
+      title: Row(children: [
+        Flexible(child: Text(cut.card.name)),
+        const SizedBox(width: 8),
+        Text(label,
+            style: TextStyle(
+                color: color, fontWeight: FontWeight.bold, fontSize: 12)),
+      ]),
+      subtitle: Text(v.reasoning),
     );
   }
 
